@@ -51,7 +51,7 @@ def cargar_txt_crep(archivo_txt):
 @st.cache_data
 def cargar_metabase(archivo):
     df = pd.read_excel(archivo)
-    df = df.rename(columns={'Deuda_PspTin': 'psp_tin'})  # Renombrar para compatibilidad
+    df['psp_tin'] = df['Deuda_PspTin'].astype(str).str.extract(r'(\d{12})')[0]  # Renombrar para compatibilidad
     return df
 
 # ----------------------------
