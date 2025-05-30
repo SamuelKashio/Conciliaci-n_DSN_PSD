@@ -65,14 +65,22 @@ st.divider()
 archivo_txt = st.file_uploader('📥 Subir archivo CREP del banco (.txt)', type=['txt'])
 archivo_metabase = st.file_uploader('📥 Subir archivo de Metabase (.xlsx)', type=['xlsx', 'xls'])
 
-if archivo_txt:
-    start = time.time()
-    df_banco = cargar_txt_crep(archivo_txt)
-    st.caption(f"✅ EECC del banco cargado en {round(time.time() - start, 2)} segundos")
+if archivo_txt is not None:
+    try:
+        start = time.time()
+        df = cargar_txt_crep(archivo_txt)
+        if df.empty:
+            st.warning("⚠️ No se encontraron líneas válidas en el archivo CREP.")
+            st.stop()
+        st.caption(f"✅ EECC del banco cargado en {round(time.time() - start, 2)} segundos")
 
-    df = df[df['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
-    df_banco = df_banco.drop_duplicates(subset='PSP_TIN')
-    st.dataframe(df_banco.head())
+        df = df[df['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
+        df_filtrado = df.drop_duplicates(subset=['PSP_TIN'])
+        st.dataframe(df_filtrado.head())
+
+    except Exception as e:
+        st.error(f"❌ Error al procesar el archivo CREP: {e}")
+        st.stop()
 
 if archivo_txt and archivo_metabase:
     start = time.time()
@@ -104,8 +112,8 @@ if archivo_txt and archivo_metabase:
     st.info(f"🔍 Se filtraron {len(df_meta_filtrado)} registros BCP PEN únicos de Metabase.")
 
     # Conciliación
-    dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_filtrado[col_psptin])]
-    psd = df_meta_filtrado[~df_meta_filtrado[col_psptin].isin(df_banco['PSP_TIN'])]
+    dsn = df_filtrado[~df_filtrado['PSP_TIN'].isin(df_meta_filtrado[col_psptin])]
+    psd = df_meta_filtrado[~df_meta_filtrado[col_psptin].isin(df_filtrado['PSP_TIN'])]
 
     # ------------------ DSN ------------------
     st.subheader('🔎 DSN (Depósitos Sin Notificación)')
