@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
 import time
 import io
 
@@ -15,12 +14,9 @@ def cargar_txt_crep(archivo_txt):
     for linea in lineas:
         if linea.startswith('DD'):
             try:
-                psp_tin_raw = linea[205:217].strip()
-                psp_tin = psp_tin_raw.lstrip('0')
-
+                psp_tin = linea[205:217].strip().lstrip("0")
                 monto_raw = linea[73:88].strip()
                 monto = int(monto_raw) / 100 if monto_raw.isdigit() else None
-
                 medio_atencion = linea[156:168].strip()
 
                 anio = linea[57:61]
@@ -43,16 +39,14 @@ def cargar_txt_crep(archivo_txt):
                     'Hora de atención': hora_pago,
                     'Nº operación': nro_operacion
                 })
-            except Exception as e:
-                print(f"Error al procesar línea: {linea}\n{e}")
+            except:
+                continue
 
     return pd.DataFrame(registros)
 
 @st.cache_data
 def cargar_metabase(archivo):
-    df = pd.read_excel(archivo)
-    df['psp_tin'] = df['Deuda_PspTin'].astype(str).str.extract(r'(\d{12})')[0]  # Renombrar para compatibilidad
-    return df
+    return pd.read_excel(archivo)
 
 # ----------------------------
 # INTERFAZ
@@ -60,81 +54,75 @@ def cargar_metabase(archivo):
 st.title('Conciliación de Pagos: DSN y PSD')
 st.markdown("""
 Herramienta para identificar:
-- **DSN**: Depósitos registrados en el banco que no fueron notificados en Kashio.
-- **PSD**: Pagos registrados como "Pagado" en Kashio, pero no encontrados en el banco.
 
-Filtra automáticamente solo las operaciones del **BCP** en **moneda PEN** y elimina duplicados de `psp_tin`.
+- **DSN**: Depósitos registrados en el banco pero no notificados en Kashio.
+- **PSD**: Pagos registrados en Kashio como "Pagado", pero no encontrados en el banco.
+
+✅ Compatible con estructura antigua y nueva del archivo de Metabase.
 """)
 st.divider()
 
-archivo_txt = st.file_uploader('📥 Subir archivo CREP del banco (formato .txt)', type=['txt'])
-archivo_metabase = st.file_uploader('📥 Subir archivo de Metabase (formato .xlsx)', type=['xlsx', 'xls'])
+archivo_txt = st.file_uploader('📥 Subir archivo CREP del banco (.txt)', type=['txt'])
+archivo_metabase = st.file_uploader('📥 Subir archivo de Metabase (.xlsx)', type=['xlsx', 'xls'])
 
-if archivo_txt is not None:
+if archivo_txt:
     start = time.time()
-    df = cargar_txt_crep(archivo_txt)
-    st.caption(f"⏱ EECC del banco cargado en {round(time.time() - start, 2)} segundos")
-    st.dataframe(df.head())
+    df_banco = cargar_txt_crep(archivo_txt)
+    st.caption(f"✅ EECC del banco cargado en {round(time.time() - start, 2)} segundos")
 
-    df = df[df['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
-    df_filtrado = df.drop_duplicates(subset=['PSP_TIN'])
+    df_banco = df_banco[df_banco['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
+    df_banco = df_banco.drop_duplicates(subset='PSP_TIN')
+    st.dataframe(df_banco.head())
 
-if archivo_txt is not None and archivo_metabase is not None:
+if archivo_txt and archivo_metabase:
     start = time.time()
-    data_metabase = cargar_metabase(archivo_metabase)
-    st.caption(f"⏱ Metabase cargado en {round(time.time() - start, 2)} segundos")
+    df_meta = cargar_metabase(archivo_metabase)
+    st.caption(f"✅ Metabase cargado en {round(time.time() - start, 2)} segundos")
 
-    data_metabase['psp_tin'] = data_metabase['psp_tin'].astype(str)
-    data_metabase = data_metabase.drop_duplicates(subset='psp_tin')
-
-    columnas = data_metabase.columns
-    if 'Banco' not in columnas or 'Moneda' not in columnas:
-        st.error("❌ No se encontraron las columnas 'Banco' y 'Moneda' en el archivo de Metabase.")
+    columnas = df_meta.columns.str.lower()
+    if 'deuda_psptin' in columnas and 'banco' in columnas and 'moneda' in columnas:
+        st.success("📄 Formato de Metabase: NUEVO")
+        col_psptin = df_meta.columns[columnas.get_loc('deuda_psptin')]
+        col_banco = df_meta.columns[columnas.get_loc('banco')]
+        col_moneda = df_meta.columns[columnas.get_loc('moneda')]
     else:
-        col_banco = 'Banco'
-        col_moneda = 'Moneda'
-        col_meta = 'psp_tin'
-        col_eecc = 'PSP_TIN'
+        st.success("📄 Formato de Metabase: ANTIGUO")
+        if len(df_meta.columns) < 27:
+            st.error("❌ Archivo de Metabase no válido: faltan columnas necesarias.")
+            st.stop()
+        col_psptin = df_meta.columns[26]
+        col_banco = df_meta.columns[10]
+        col_moneda = df_meta.columns[21]
 
-        data_metabase_bcp_pen = data_metabase[
-            (data_metabase[col_banco].astype(str).str.upper() == 'BCP') &
-            (data_metabase[col_moneda].astype(str).str.upper() == 'PEN')
-        ]
-        cantidad_filtrada = str(len(data_metabase_bcp_pen))
-        st.info(f"🔍 Se filtraron {cantidad_filtrada} operaciones del BCP en moneda PEN desde Metabase (sin duplicados).")
+    df_meta[col_psptin] = df_meta[col_psptin].astype(str)
+    df_meta = df_meta.drop_duplicates(subset=col_psptin)
 
-        # -----------------------
-        # 🟡 DSN
-        # -----------------------
-        st.subheader('🔎 DSN (Depósitos Sin Notificación)')
-        dsn = df_filtrado[~df_filtrado[col_eecc].isin(data_metabase_bcp_pen[col_meta])]
-        st.write(f"✅ {len(dsn)} DSN encontrados")
-        st.dataframe(dsn)
+    df_meta_filtrado = df_meta[
+        (df_meta[col_banco].astype(str).str.upper() == 'BCP') &
+        (df_meta[col_moneda].astype(str).str.upper() == 'PEN')
+    ]
+    st.info(f"🔍 Se filtraron {len(df_meta_filtrado)} registros BCP PEN únicos de Metabase.")
 
-        output_dsn = io.BytesIO()
-        with pd.ExcelWriter(output_dsn, engine='openpyxl') as writer:
-            dsn.to_excel(writer, index=False, sheet_name='DSN')
-        st.download_button(
-            label='Descargar DSN encontrados (Excel)',
-            data=output_dsn.getvalue(),
-            file_name='DSN_encontrados.xlsx',
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
+    # Conciliación
+    dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_filtrado[col_psptin])]
+    psd = df_meta_filtrado[~df_meta_filtrado[col_psptin].isin(df_banco['PSP_TIN'])]
 
-        # -----------------------
-        # 🔁 PSD
-        # -----------------------
-        st.subheader('🔁 PSD (Pagos Sin Depósito)')
-        psd = data_metabase_bcp_pen[~data_metabase_bcp_pen[col_meta].isin(df_filtrado[col_eecc])]
-        st.write(f"⚠️ {len(psd)} PSD encontrados")
-        st.dataframe(psd)
+    # ------------------ DSN ------------------
+    st.subheader('🔎 DSN (Depósitos Sin Notificación)')
+    st.write(f"🟡 {len(dsn)} DSN encontrados")
+    st.dataframe(dsn)
+    output_dsn = io.BytesIO()
+    with pd.ExcelWriter(output_dsn, engine='openpyxl') as writer:
+        dsn.to_excel(writer, index=False, sheet_name='DSN')
+    st.download_button("⬇️ Descargar DSN", data=output_dsn.getvalue(),
+                       file_name="DSN_encontrados.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        output_psd = io.BytesIO()
-        with pd.ExcelWriter(output_psd, engine='openpyxl') as writer:
-            psd.to_excel(writer, index=False, sheet_name='PSD')
-        st.download_button(
-            label='Descargar PSD encontrados (Excel)',
-            data=output_psd.getvalue(),
-            file_name='PSD_encontrados.xlsx',
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
+    # ------------------ PSD ------------------
+    st.subheader('🔁 PSD (Pagos Sin Depósito)')
+    st.write(f"⚠️ {len(psd)} PSD encontrados")
+    st.dataframe(psd)
+    output_psd = io.BytesIO()
+    with pd.ExcelWriter(output_psd, engine='openpyxl') as writer:
+        psd.to_excel(writer, index=False, sheet_name='PSD')
+    st.download_button("⬇️ Descargar PSD", data=output_psd.getvalue(),
+                       file_name="PSD_encontrados.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
