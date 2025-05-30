@@ -70,7 +70,7 @@ if archivo_txt:
     df_banco = cargar_txt_crep(archivo_txt)
     st.caption(f"✅ EECC del banco cargado en {round(time.time() - start, 2)} segundos")
 
-    df_banco = df_banco[df_banco['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
+    df = df[df['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
     df_banco = df_banco.drop_duplicates(subset='PSP_TIN')
     st.dataframe(df_banco.head())
 
