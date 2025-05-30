@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
 import io
 
 # ----------------------------
@@ -50,8 +49,10 @@ def cargar_txt_crep(archivo_txt):
 @st.cache_data
 def cargar_metabase(archivo):
     df = pd.read_excel(archivo)
-    df['Deuda_PspTin'] = df['Deuda_PspTin'].astype(str)
-    df = df.drop_duplicates(subset='Deuda_PspTin')
+    if df.shape[1] < 8:
+        raise ValueError("El archivo de Metabase no tiene al menos 8 columnas.")
+    df.iloc[:, 7] = df.iloc[:, 7].astype(str)
+    df = df.drop_duplicates(subset=df.columns[7])
     return df
 
 # ----------------------------
@@ -59,11 +60,11 @@ def cargar_metabase(archivo):
 # ----------------------------
 st.title('Conciliación de Pagos: DSN y PSD')
 st.markdown("""
-Herramienta para identificar:
-- **DSN**: Depósitos registrados en el banco que no fueron notificados en Kashio.
-- **PSD**: Pagos registrados como "Pagado" en Kashio, pero no encontrados en el banco.
+Conciliación basada en la comparación entre:
+- PSP_TIN extraído del archivo CREP (.txt) del banco.
+- Columna 8 (posición 7) del archivo de Metabase (.xlsx).
 
-Esta versión usa la nueva estructura del archivo Metabase (`Deuda_PspTin`, `Banco`, `Moneda`) y elimina duplicados automáticamente.
+El sistema elimina duplicados y filtra automáticamente por banco BCP y moneda PEN.
 """)
 st.divider()
 
@@ -77,25 +78,26 @@ if archivo_txt is not None:
     df_filtrado = df.drop_duplicates(subset=['PSP_TIN'])
 
 if archivo_txt is not None and archivo_metabase is not None:
-    data_metabase = cargar_metabase(archivo_metabase)
+    try:
+        data_metabase = cargar_metabase(archivo_metabase)
 
-    # Validar columnas esperadas
-    columnas_requeridas = {'Deuda_PspTin', 'Banco', 'Moneda'}
-    if not columnas_requeridas.issubset(set(data_metabase.columns)):
-        st.error("❌ El archivo Metabase debe contener las columnas: Deuda_PspTin, Banco, Moneda")
-    else:
-        # Filtrar solo BCP y PEN
+        # Extraer columna 8 (índice 7) para validación
+        columna_psptin_meta = data_metabase.columns[7]
+        columna_banco = data_metabase.columns[19]  # banco → columna 20 (índice 19)
+        columna_moneda = data_metabase.columns[16]  # moneda → columna 17 (índice 16)
+
         data_metabase_bcp_pen = data_metabase[
-            (data_metabase['Banco'].astype(str).str.upper() == 'BCP') &
-            (data_metabase['Moneda'].astype(str).str.upper() == 'PEN')
+            (data_metabase[columna_banco].astype(str).str.upper() == 'BCP') &
+            (data_metabase[columna_moneda].astype(str).str.upper() == 'PEN')
         ]
-        st.success(f"🔍 Filtradas {len(data_metabase_bcp_pen)} operaciones del BCP en moneda PEN (sin duplicados).")
+
+        st.success(f"🔍 Filtradas {len(data_metabase_bcp_pen)} operaciones del BCP en moneda PEN.")
 
         # -----------------------
         # 🟡 DSN
         # -----------------------
         st.subheader('🔎 DSN (Depósitos Sin Notificación)')
-        dsn = df_filtrado[~df_filtrado['PSP_TIN'].isin(data_metabase_bcp_pen['Deuda_PspTin'])]
+        dsn = df_filtrado[~df_filtrado['PSP_TIN'].isin(data_metabase_bcp_pen[columna_psptin_meta])]
         st.write(f"✅ {len(dsn)} DSN encontrados")
         st.dataframe(dsn)
 
@@ -113,7 +115,7 @@ if archivo_txt is not None and archivo_metabase is not None:
         # 🔁 PSD
         # -----------------------
         st.subheader('🔁 PSD (Pagos Sin Depósito)')
-        psd = data_metabase_bcp_pen[~data_metabase_bcp_pen['Deuda_PspTin'].isin(df_filtrado['PSP_TIN'])]
+        psd = data_metabase_bcp_pen[~data_metabase_bcp_pen[columna_psptin_meta].isin(df_filtrado['PSP_TIN'])]
         st.write(f"⚠️ {len(psd)} PSD encontrados")
         st.dataframe(psd)
 
@@ -126,3 +128,6 @@ if archivo_txt is not None and archivo_metabase is not None:
             file_name='PSD_encontrados.xlsx',
             mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
+
+    except Exception as e:
+        st.error(f"❌ Error al procesar el archivo de Metabase: {e}")
