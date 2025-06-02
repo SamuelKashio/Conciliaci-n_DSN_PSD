@@ -26,16 +26,16 @@ def cargar_txt_crep(archivo_txt):
                 minuto = linea[170:172]
                 segundo = linea[172:174]
                 hora_pago = f"{hora}:{minuto}:{segundo}"
-                fecha_hora_pago = datetime.strptime(f"{dia}/{mes}/{anio} {hora}:{minuto}:{segundo}", "%d/%m/%Y %H:%M:%S")
                 nro_operacion = linea[124:130].strip()
+
                 registros.append({
                     'PSP_TIN': psp_tin,
                     'Monto total pagado': monto,
                     'Medio de atención': medio_atencion,
                     'Fecha de pago': fecha_pago,
                     'Hora de atención': hora_pago,
-                    'FechaHora': fecha_hora_pago,
-                    'Nº operación': nro_operacion
+                    'Nº operación': nro_operacion,
+                    'FechaHora': datetime.strptime(f"{anio}-{mes}-{dia} {hora}:{minuto}:{segundo}", "%Y-%m-%d %H:%M:%S")
                 })
             except:
                 continue
@@ -45,17 +45,29 @@ def cargar_txt_crep(archivo_txt):
 
 @st.cache_data
 def cargar_excel_bcp(archivo):
-    df = pd.read_excel(archivo, skiprows=7)
-    df['Descripción operación'] = df['Descripción operación'].str.strip()
-    df['Nº operación'] = df['Nº operación'].astype(str).str.strip()
-    df['PSP_TIN'] = df['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
-    df['FechaHora'] = pd.to_datetime(df['Fecha operación'].astype(str) + ' ' + df['Hora'].astype(str), errors='coerce')
+    df = pd.read_excel(archivo)
+    columnas = df.columns.str.lower()
+
+    if 'operación - hora' in columnas:
+        df = pd.read_excel(archivo, header=4)  # movimientos históricos
+        df['PSP_TIN'] = df['Descripción operación'].astype(str).str.extract(r'(2\d{11})(?!\d)', expand=False)
+        df['Nº operación'] = df['Operación - Número'].astype(str).str.strip()
+        df['Operación - Hora'] = df['Operación - Hora'].astype(str).str.strip()
+        df['FechaHora'] = pd.to_datetime(df['Fecha'].astype(str) + ' ' + df['Operación - Hora'])
+    else:
+        df = pd.read_excel(archivo, skiprows=7)  # movimientos diarios
+        df['Descripción operación'] = df['Descripción operación'].astype(str).str.strip()
+        df['Nº operación'] = df['Nº operación'].astype(str).str.strip()
+        df['PSP_TIN'] = df['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
+        df['FechaHora'] = pd.to_datetime(df['Fecha operación'])
+
     duplicados = df[df.duplicated(subset=['Nº operación'], keep=False)]
     extornos = duplicados['Descripción operación'].str.contains('Extorno', case=False, na=False)
     numeros_extorno = duplicados[extornos]['Nº operación'].unique()
     df_filtrado = df[~df['Nº operación'].isin(numeros_extorno)]
     df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
     df_filtrado = df_filtrado[df_filtrado['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
+
     return df_filtrado[['PSP_TIN', 'FechaHora']]
 
 @st.cache_data
@@ -71,17 +83,16 @@ Detecta:
 - **DSN** (Depósitos sin notificación)
 - **PSD** (Pagos sin depósito)
 
-✅ Compatible con archivos .txt y .xlsx  
-✅ Compara solo hasta la **hora de corte del banco**
+Compatible con EECC del banco en `.txt`, `movimientos diarios (.xlsx)` y `movimientos históricos (.xlsx)`
 """)
 st.divider()
 
 archivo_banco = st.file_uploader("📥 Subir archivo del banco (.txt o .xlsx)", type=["txt", "xlsx", "xls"])
 archivo_metabase = st.file_uploader("📥 Subir archivo de Metabase (.xlsx)", type=["xlsx", "xls"])
 
+# PROCESAMIENTO BANCO
 df_banco = None
 hora_corte = None
-
 if archivo_banco is not None:
     start = time.time()
     try:
@@ -91,20 +102,22 @@ if archivo_banco is not None:
         else:
             st.caption("Formato detectado: EECC BCP (.xlsx)")
             df_banco = cargar_excel_bcp(archivo_banco)
+
         hora_corte = df_banco['FechaHora'].max()
         st.success(f"✅ EECC del banco cargado con {len(df_banco)} operaciones únicas en {round(time.time() - start, 2)} s")
-        st.info(f"🕐 Hora de corte detectada: {hora_corte}")
+        st.info(f"⏱ Hora de corte detectada: {hora_corte}")
     except Exception as e:
         st.error(f"❌ Error al procesar el archivo del banco: {e}")
         st.stop()
 
+# PROCESAMIENTO METABASE
 if archivo_banco and archivo_metabase:
     start = time.time()
     df_meta = cargar_metabase(archivo_metabase)
     st.caption(f"✅ Metabase cargado en {round(time.time() - start, 2)} segundos")
 
     columnas = df_meta.columns.str.lower()
-    if 'deuda_psptin' in columnas and 'banco' in columnas and 'moneda' in columnas:
+    if 'deuda_psptin' in columnas and 'banco' in columnas and 'moneda' in columnas and 'pc_create_date_gmt_peru' in columnas:
         col_psptin = df_meta.columns[columnas.get_loc('deuda_psptin')]
         col_banco = df_meta.columns[columnas.get_loc('banco')]
         col_moneda = df_meta.columns[columnas.get_loc('moneda')]
@@ -124,9 +137,8 @@ if archivo_banco and archivo_metabase:
         (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
         (df_meta[col_fecha] <= hora_corte)
     ]
-    st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN) hasta la hora de corte")
+    st.info(f"🔍 {len(df_meta_bcp_pen)} registros de Metabase (BCP - PEN) únicos hasta la hora de corte")
 
-    # DSN
     dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_bcp_pen[col_psptin])]
     st.subheader("🟡 DSN encontrados")
     st.write(f"{len(dsn)} DSN detectados")
@@ -137,7 +149,6 @@ if archivo_banco and archivo_metabase:
     st.download_button("⬇️ Descargar DSN", data=output_dsn.getvalue(),
                        file_name="DSN_encontrados.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    # PSD
     psd = df_meta_bcp_pen[~df_meta_bcp_pen[col_psptin].isin(df_banco['PSP_TIN'])]
     st.subheader("🔁 PSD encontrados")
     st.write(f"{len(psd)} PSD detectados")
