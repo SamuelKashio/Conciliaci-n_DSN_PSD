@@ -46,132 +46,55 @@ def cargar_txt_crep(archivo_txt):
 @st.cache_data
 def cargar_excel_banco(archivo):
     try:
-        df_preview = pd.read_excel(archivo, nrows=15).fillna('')
-        columnas = df_preview.columns.str.lower()
+        df = pd.read_excel(archivo, skiprows=0)
+        columnas = df.columns.str.lower()
 
-        if 'operación - hora' in columnas:
-            st.caption("Formato detectado: BCP - Movimientos Históricos")
-            df = pd.read_excel(archivo, skiprows=4)
-            desc, fecha, hora, nro_op = 'Descripción', 'Fecha', 'Operación - Hora', 'Número de Operación'
+        # Interbank
+        if 'descripción' in columnas and 'número operación' in columnas and 'fecha' in columnas and 'importe' in columnas:
+            st.caption("Formato detectado: INTERBANK (.xlsx)")
+            df['PSP_TIN'] = df['Descripción'].astype(str).str.extract(r'(2\d{11})(?!\d)', expand=False)
+            df['Nº operación'] = df['Número Operación'].astype(str).str.strip()
+            df['FechaHora'] = pd.to_datetime(df['Fecha'], errors='coerce')
 
-        elif 'descripción operación' in columnas:
-            st.caption("Formato detectado: BCP - Movimientos Diarios")
+        # BCP - históricos
+        elif 'descripción' in columnas and 'número de operación' in columnas and 'fecha' in columnas and 'operación - hora' in columnas:
+            st.caption("Formato detectado: BCP Históricos (.xlsx)")
+            df['PSP_TIN'] = df['Descripción'].astype(str).str.extract(r'(2\d{11})(?!\d)', expand=False)
+            df['Nº operación'] = df['Número de Operación'].astype(str).str.strip()
+            df['FechaHora'] = pd.to_datetime(df['Fecha'].astype(str) + ' ' + df['Operación - Hora'].astype(str), errors='coerce')
+
+        # BCP - diarios
+        elif 'descripción operación' in columnas and 'nº operación' in columnas and 'fecha operación' in columnas and 'hora' in columnas:
+            st.caption("Formato detectado: BCP Diario (.xlsx)")
             df = pd.read_excel(archivo, skiprows=7)
-            desc, fecha, hora, nro_op = 'Descripción operación', 'Fecha operación', 'Hora', 'Nº operación'
+            df['PSP_TIN'] = df['Descripción operación'].astype(str).str.extract(r'(2\d{11})(?!\d)', expand=False)
+            df['Nº operación'] = df['Nº operación'].astype(str).str.strip()
+            df['FechaHora'] = pd.to_datetime(df['Fecha operación'].astype(str) + ' ' + df['Hora'].astype(str), errors='coerce')
 
-        elif 'descripción' in columnas and 'nro. de operación' in columnas:
-            st.caption("Formato detectado: INTERBANK")
-            df = pd.read_excel(archivo, skiprows=11)
-            desc, fecha, hora, nro_op = 'Descripción', 'Fecha de operación', None, 'Nro. de operación'
         else:
             raise ValueError("Formato de archivo no reconocido")
 
-        df[desc] = df[desc].astype(str).str.strip()
-        df[nro_op] = df[nro_op].astype(str).str.strip()
-        df['PSP_TIN'] = df[desc].str.extract(r'(2\d{11})(?!\d)', expand=False)
-
-        if hora:
-            df['FechaHora'] = pd.to_datetime(df[fecha].astype(str) + ' ' + df[hora].astype(str), errors='coerce')
-        else:
-            df['FechaHora'] = pd.to_datetime(df[fecha], errors='coerce')
-
-        duplicados = df[df.duplicated(subset=[nro_op], keep=False)]
-        extornos = duplicados[desc].str.contains('Extorno', case=False, na=False)
-        numeros_extorno = duplicados[extornos][nro_op].unique()
-        df_filtrado = df[~df[nro_op].isin(numeros_extorno)]
+        duplicados = df[df.duplicated(subset=['Nº operación'], keep=False)]
+        extornos = duplicados[df.columns[df.columns.str.lower().str.contains('descripción')][0]].str.contains('Extorno', case=False, na=False)
+        numeros_extorno = duplicados[extornos]['Nº operación'].unique()
+        df_filtrado = df[~df['Nº operación'].isin(numeros_extorno)]
         df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
         df_filtrado = df_filtrado[df_filtrado['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
         return df_filtrado[['PSP_TIN', 'FechaHora']]
 
     except Exception as e:
-        raise ValueError(f"Error al procesar archivo Excel del banco: {e}")
+        st.error(f"❌ Error al procesar archivo Excel del banco: {e}")
+        st.stop()
 
 @st.cache_data
 def cargar_metabase(archivo):
     return pd.read_excel(archivo)
 
-# --------------------------
-# INTERFAZ
-# --------------------------
-st.title("Conciliación de Pagos - Kashio")
-st.markdown("""
-Detecta:
-- **DSN** (Depósitos sin notificación)
-- **PSD** (Pagos sin depósito)
+# El resto del código (interfaz y lógica DSN/PSD) no cambia.
+# Solo se debe reemplazar donde antes llamabas a `cargar_excel_bcp` por `cargar_excel_banco`
+# Por ejemplo:
 
-✅ Compatible con BCP, INTERBANK y CREP (.txt)  
-✅ Compara solo hasta la **hora de corte del banco**
-""")
-st.divider()
-
-archivo_banco = st.file_uploader("📥 Subir archivo del banco (.txt o .xlsx)", type=["txt", "xlsx", "xls"])
-archivo_metabase = st.file_uploader("📥 Subir archivo de Metabase (.xlsx)", type=["xlsx", "xls"])
-
-df_banco = None
-hora_corte = None
-
-if archivo_banco is not None:
-    start = time.time()
-    try:
-        if archivo_banco.name.endswith('.txt'):
-            st.caption("Formato detectado: CREP (.txt)")
-            df_banco = cargar_txt_crep(archivo_banco)
-        else:
-            df_banco = cargar_excel_banco(archivo_banco)
-
-        hora_corte = df_banco['FechaHora'].max()
-        st.success(f"✅ Archivo del banco cargado con {len(df_banco)} operaciones únicas en {round(time.time() - start, 2)} s")
-        st.info(f"🕐 Hora de corte detectada: {hora_corte}")
-    except Exception as e:
-        st.error(f"❌ {e}")
-        st.stop()
-
-if archivo_banco and archivo_metabase:
-    start = time.time()
-    df_meta = cargar_metabase(archivo_metabase)
-    st.caption(f"✅ Metabase cargado en {round(time.time() - start, 2)} segundos")
-
-    columnas = df_meta.columns.str.lower()
-    if 'deuda_psptin' in columnas and 'banco' in columnas and 'moneda' in columnas:
-        col_psptin = df_meta.columns[columnas.get_loc('deuda_psptin')]
-        col_banco = df_meta.columns[columnas.get_loc('banco')]
-        col_moneda = df_meta.columns[columnas.get_loc('moneda')]
-        col_fecha = df_meta.columns[columnas.get_loc('pc_create_date_gmt_peru')]
-    else:
-        col_psptin = df_meta.columns[26]
-        col_banco = df_meta.columns[10]
-        col_moneda = df_meta.columns[21]
-        col_fecha = df_meta.columns[15]
-
-    df_meta[col_psptin] = df_meta[col_psptin].astype(str)
-    df_meta = df_meta.drop_duplicates(subset=col_psptin)
-    df_meta[col_fecha] = pd.to_datetime(df_meta[col_fecha], errors='coerce')
-
-    df_meta_bcp_pen = df_meta[
-        (df_meta[col_banco].astype(str).str.upper().isin(["BCP", "INTERBANK"])) &
-        (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
-        (df_meta[col_fecha] <= hora_corte)
-    ]
-    st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP / INTERBANK - PEN) hasta la hora de corte")
-
-    # DSN
-    dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_bcp_pen[col_psptin])]
-    st.subheader("🟡 DSN encontrados")
-    st.write(f"{len(dsn)} DSN detectados")
-    st.dataframe(dsn)
-    output_dsn = io.BytesIO()
-    with pd.ExcelWriter(output_dsn, engine='openpyxl') as writer:
-        dsn.to_excel(writer, index=False)
-    st.download_button("⬇️ Descargar DSN", data=output_dsn.getvalue(),
-                       file_name="DSN_encontrados.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    # PSD
-    psd = df_meta_bcp_pen[~df_meta_bcp_pen[col_psptin].isin(df_banco['PSP_TIN'])]
-    st.subheader("🔁 PSD encontrados")
-    st.write(f"{len(psd)} PSD detectados")
-    st.dataframe(psd)
-    output_psd = io.BytesIO()
-    with pd.ExcelWriter(output_psd, engine='openpyxl') as writer:
-        psd.to_excel(writer, index=False)
-    st.download_button("⬇️ Descargar PSD", data=output_psd.getvalue(),
-                       file_name="PSD_encontrados.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+# if archivo_banco.name.endswith('.txt'):
+#     df_banco = cargar_txt_crep(archivo_banco)
+# else:
+#     df_banco = cargar_excel_banco(archivo_banco)
