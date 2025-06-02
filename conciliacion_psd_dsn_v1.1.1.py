@@ -72,7 +72,7 @@ Detecta:
 - **PSD** (Pagos sin depósito)
 
 ✅ Compatible con archivos .txt y .xlsx  
-✅ Compara solo hasta la **hora de corte del banco (solo para CREP)**
+✅ Compara solo hasta la **hora de corte del banco** (solo CREP)
 """)
 st.divider()
 
@@ -81,6 +81,7 @@ archivo_metabase = st.file_uploader("📥 Subir archivo de Metabase (.xlsx)", ty
 
 df_banco = None
 hora_corte = None
+es_crep = False
 
 if archivo_banco is not None:
     start = time.time()
@@ -89,11 +90,13 @@ if archivo_banco is not None:
             st.caption("Formato detectado: CREP (.txt)")
             df_banco = cargar_txt_crep(archivo_banco)
             hora_corte = df_banco['FechaHora'].max()
-            st.info(f"🕐 Hora de corte detectada: {hora_corte}")
+            es_crep = True
         else:
             st.caption("Formato detectado: EECC BCP (.xlsx)")
             df_banco = cargar_excel_bcp(archivo_banco)
         st.success(f"✅ EECC del banco cargado con {len(df_banco)} operaciones únicas en {round(time.time() - start, 2)} s")
+        if es_crep:
+            st.info(f"🕐 Hora de corte detectada (CREP): {hora_corte}")
     except Exception as e:
         st.error(f"❌ Error al procesar el archivo del banco: {e}")
         st.stop()
@@ -119,19 +122,19 @@ if archivo_banco and archivo_metabase:
     df_meta = df_meta.drop_duplicates(subset=col_psptin)
     df_meta[col_fecha] = pd.to_datetime(df_meta[col_fecha], errors='coerce')
 
-    if hora_corte is not None:
+    if es_crep:
         df_meta_bcp_pen = df_meta[
             (df_meta[col_banco].astype(str).str.upper() == "BCP") &
             (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
             (df_meta[col_fecha] <= hora_corte)
         ]
+        st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN) hasta la hora de corte")
     else:
         df_meta_bcp_pen = df_meta[
             (df_meta[col_banco].astype(str).str.upper() == "BCP") &
             (df_meta[col_moneda].astype(str).str.upper() == "PEN")
         ]
-
-    st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN){' hasta la hora de corte' if hora_corte is not None else ''}")
+        st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN) sin considerar hora de corte")
 
     # DSN
     dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_bcp_pen[col_psptin])]
