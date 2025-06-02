@@ -45,18 +45,22 @@ def cargar_txt_crep(archivo_txt):
 
 @st.cache_data
 def cargar_excel_bcp(archivo):
-    df = pd.read_excel(archivo, skiprows=7)
-    df['Descripción operación'] = df['Descripción operación'].astype(str).str.strip()
-    df['Nº operación'] = df['Nº operación'].astype(str).str.strip()
-    df['PSP_TIN'] = df['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
-    df['Fecha'] = pd.to_datetime(df['Fecha operación'], errors='coerce')
-    duplicados = df[df.duplicated(subset=['Nº operación'], keep=False)]
+    df_raw = pd.read_excel(archivo, skiprows=7)
+    if 'Descripción operación' not in df_raw.columns:
+        raise ValueError("Formato de archivo no reconocido: falta 'Descripción operación'")
+
+    df_raw['Descripción operación'] = df_raw['Descripción operación'].astype(str).str.strip()
+    df_raw['Nº operación'] = df_raw['Nº operación'].astype(str).str.strip()
+    df_raw['PSP_TIN'] = df_raw['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
+
+    duplicados = df_raw[df_raw.duplicated(subset=['Nº operación'], keep=False)]
     extornos = duplicados['Descripción operación'].str.contains('Extorno', case=False, na=False)
     numeros_extorno = duplicados[extornos]['Nº operación'].unique()
-    df_filtrado = df[~df['Nº operación'].isin(numeros_extorno)]
+    df_filtrado = df_raw[~df_raw['Nº operación'].isin(numeros_extorno)]
     df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
     df_filtrado = df_filtrado[df_filtrado['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
-    return df_filtrado[['PSP_TIN', 'Fecha']].rename(columns={'Fecha': 'FechaHora'})
+    df_filtrado['FechaHora'] = pd.to_datetime(df_filtrado['Fecha operación'], errors='coerce')
+    return df_filtrado[['PSP_TIN', 'FechaHora']]
 
 @st.cache_data
 def cargar_metabase(archivo):
@@ -81,7 +85,6 @@ archivo_metabase = st.file_uploader("📥 Subir archivo de Metabase (.xlsx)", ty
 
 df_banco = None
 hora_corte = None
-es_crep = False
 
 if archivo_banco is not None:
     start = time.time()
@@ -90,13 +93,12 @@ if archivo_banco is not None:
             st.caption("Formato detectado: CREP (.txt)")
             df_banco = cargar_txt_crep(archivo_banco)
             hora_corte = df_banco['FechaHora'].max()
-            es_crep = True
         else:
             st.caption("Formato detectado: EECC BCP (.xlsx)")
             df_banco = cargar_excel_bcp(archivo_banco)
         st.success(f"✅ EECC del banco cargado con {len(df_banco)} operaciones únicas en {round(time.time() - start, 2)} s")
-        if es_crep:
-            st.info(f"🕐 Hora de corte detectada (CREP): {hora_corte}")
+        if hora_corte:
+            st.info(f"🕐 Hora de corte detectada: {hora_corte}")
     except Exception as e:
         st.error(f"❌ Error al procesar el archivo del banco: {e}")
         st.stop()
@@ -122,19 +124,19 @@ if archivo_banco and archivo_metabase:
     df_meta = df_meta.drop_duplicates(subset=col_psptin)
     df_meta[col_fecha] = pd.to_datetime(df_meta[col_fecha], errors='coerce')
 
-    if es_crep:
+    if hora_corte:
         df_meta_bcp_pen = df_meta[
             (df_meta[col_banco].astype(str).str.upper() == "BCP") &
             (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
             (df_meta[col_fecha] <= hora_corte)
         ]
-        st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN) hasta la hora de corte")
     else:
         df_meta_bcp_pen = df_meta[
             (df_meta[col_banco].astype(str).str.upper() == "BCP") &
             (df_meta[col_moneda].astype(str).str.upper() == "PEN")
         ]
-        st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN) sin considerar hora de corte")
+
+    st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN){' hasta la hora de corte' if hora_corte else ''}")
 
     # DSN
     dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_bcp_pen[col_psptin])]
