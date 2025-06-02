@@ -46,17 +46,21 @@ def cargar_txt_crep(archivo_txt):
 @st.cache_data
 def cargar_excel_bcp(archivo):
     df = pd.read_excel(archivo, skiprows=7)
-    df['Descripción operación'] = df['Descripción operación'].str.strip()
+    df['Descripción operación'] = df['Descripción operación'].astype(str).str.strip()
     df['Nº operación'] = df['Nº operación'].astype(str).str.strip()
+    df['Monto total pagado'] = df['Monto'].astype(float)
+    df['Fecha de pago'] = pd.to_datetime(df['Fecha operación'], errors='coerce').dt.strftime('%d/%m/%Y')
     df['PSP_TIN'] = df['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
-    df['FechaHora'] = pd.to_datetime(df['Fecha operación'].astype(str) + ' ' + df['Hora'].astype(str), errors='coerce')
+
     duplicados = df[df.duplicated(subset=['Nº operación'], keep=False)]
     extornos = duplicados['Descripción operación'].str.contains('Extorno', case=False, na=False)
     numeros_extorno = duplicados[extornos]['Nº operación'].unique()
+
     df_filtrado = df[~df['Nº operación'].isin(numeros_extorno)]
     df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
     df_filtrado = df_filtrado[df_filtrado['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
-    return df_filtrado[['PSP_TIN', 'FechaHora']]
+
+    return df_filtrado[['PSP_TIN', 'Nº operación', 'Monto total pagado', 'Fecha de pago']]
 
 @st.cache_data
 def cargar_metabase(archivo):
@@ -72,12 +76,12 @@ Detecta:
 - **PSD** (Pagos sin depósito)
 
 ✅ Compatible con archivos .txt y .xlsx  
-✅ Compara solo hasta la **hora de corte del banco**
+✅ Compara solo hasta la **hora de corte del banco (CREP)**
 """)
 st.divider()
 
-archivo_banco = st.file_uploader("📥 Subir archivo del banco (.txt o .xlsx)", type=["txt", "xlsx", "xls"])
-archivo_metabase = st.file_uploader("📥 Subir archivo de Metabase (.xlsx)", type=["xlsx", "xls"])
+archivo_banco = st.file_uploader("\U0001F4E5 Subir archivo del banco (.txt o .xlsx)", type=["txt", "xlsx", "xls"])
+archivo_metabase = st.file_uploader("\U0001F4E5 Subir archivo de Metabase (.xlsx)", type=["xlsx", "xls"])
 
 df_banco = None
 hora_corte = None
@@ -88,12 +92,12 @@ if archivo_banco is not None:
         if archivo_banco.name.endswith('.txt'):
             st.caption("Formato detectado: CREP (.txt)")
             df_banco = cargar_txt_crep(archivo_banco)
+            hora_corte = df_banco['FechaHora'].max()
+            st.info(f"\U0001F551 Hora de corte detectada: {hora_corte}")
         else:
             st.caption("Formato detectado: EECC BCP (.xlsx)")
             df_banco = cargar_excel_bcp(archivo_banco)
-        hora_corte = df_banco['FechaHora'].max()
-        st.success(f"✅ EECC del banco cargado con {len(df_banco)} operaciones únicas en {round(time.time() - start, 2)} s")
-        st.info(f"🕐 Hora de corte detectada: {hora_corte}")
+        st.success(f"✅ Archivo del banco cargado con {len(df_banco)} operaciones únicas en {round(time.time() - start, 2)} s")
     except Exception as e:
         st.error(f"❌ Error al procesar el archivo del banco: {e}")
         st.stop()
@@ -119,16 +123,22 @@ if archivo_banco and archivo_metabase:
     df_meta = df_meta.drop_duplicates(subset=col_psptin)
     df_meta[col_fecha] = pd.to_datetime(df_meta[col_fecha], errors='coerce')
 
-    df_meta_bcp_pen = df_meta[
-        (df_meta[col_banco].astype(str).str.upper() == "BCP") &
-        (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
-        (df_meta[col_fecha] <= hora_corte)
-    ]
-    st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN) hasta la hora de corte")
+    if hora_corte:
+        df_meta_bcp_pen = df_meta[
+            (df_meta[col_banco].astype(str).str.upper() == "BCP") &
+            (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
+            (df_meta[col_fecha] <= hora_corte)
+        ]
+        st.info(f"\U0001F50D {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN) hasta la hora de corte")
+    else:
+        df_meta_bcp_pen = df_meta[
+            (df_meta[col_banco].astype(str).str.upper() == "BCP") &
+            (df_meta[col_moneda].astype(str).str.upper() == "PEN")
+        ]
+        st.info(f"\U0001F50D {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN)")
 
-    # DSN
     dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_bcp_pen[col_psptin])]
-    st.subheader("🟡 DSN encontrados")
+    st.subheader("\U0001F7E1 DSN encontrados")
     st.write(f"{len(dsn)} DSN detectados")
     st.dataframe(dsn)
     output_dsn = io.BytesIO()
@@ -137,9 +147,8 @@ if archivo_banco and archivo_metabase:
     st.download_button("⬇️ Descargar DSN", data=output_dsn.getvalue(),
                        file_name="DSN_encontrados.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    # PSD
     psd = df_meta_bcp_pen[~df_meta_bcp_pen[col_psptin].isin(df_banco['PSP_TIN'])]
-    st.subheader("🔁 PSD encontrados")
+    st.subheader("\U0001F501 PSD encontrados")
     st.write(f"{len(psd)} PSD detectados")
     st.dataframe(psd)
     output_psd = io.BytesIO()
