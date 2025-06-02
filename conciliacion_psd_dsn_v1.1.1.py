@@ -45,39 +45,29 @@ def cargar_txt_crep(archivo_txt):
 
 @st.cache_data
 def cargar_excel_bcp(archivo):
-    # Primero intenta cargar como movimientos históricos
-    try:
-        df = pd.read_excel(archivo, skiprows=4)  # Encabezado en fila 5
-        if 'Descripción' in df.columns and 'Número de Operación' in df.columns:
-            st.caption("Formato detectado: Movimientos Históricos (.xlsx)")
-            col_desc = 'Descripción'
-            col_nro_op = 'Número de Operación'
-            col_fecha = 'Fecha'
-            col_hora = 'Operación - Hora'
-        else:
-            raise ValueError("No es formato histórico")
-    except:
-        # Si falla, intenta como movimientos diarios
-        df = pd.read_excel(archivo, skiprows=7)  # Encabezado en fila 8
-        st.caption("Formato detectado: Movimientos Diarios (.xlsx)")
-        col_desc = 'Descripción operación'
-        col_nro_op = 'Nº operación'
-        col_fecha = 'Fecha operación'
-        col_hora = 'Hora'
-
-    df[col_desc] = df[col_desc].astype(str).str.strip()
-    df[col_nro_op] = df[col_nro_op].astype(str).str.strip()
-    df['PSP_TIN'] = df[col_desc].str.extract(r'(2\d{11})(?!\d)', expand=False)
-    df['FechaHora'] = pd.to_datetime(df[col_fecha].astype(str) + ' ' + df[col_hora].astype(str), errors='coerce')
-
-    duplicados = df[df.duplicated(subset=[col_nro_op], keep=False)]
-    extornos = duplicados[col_desc].str.contains('Extorno', case=False, na=False)
-    numeros_extorno = duplicados[extornos][col_nro_op].unique()
-    df_filtrado = df[~df[col_nro_op].isin(numeros_extorno)]
+    df = pd.read_excel(archivo, skiprows=7)
+    df['Descripción operación'] = df['Descripción operación'].str.strip()
+    df['Nº operación'] = df['Nº operación'].astype(str).str.strip()
+    df['PSP_TIN'] = df['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
+    df['FechaHora'] = pd.to_datetime(df['Fecha operación'].astype(str) + ' ' + df['Hora'].astype(str), errors='coerce')
+    duplicados = df[df.duplicated(subset=['Nº operación'], keep=False)]
+    extornos = duplicados['Descripción operación'].str.contains('Extorno', case=False, na=False)
+    numeros_extorno = duplicados[extornos]['Nº operación'].unique()
+    df_filtrado = df[~df['Nº operación'].isin(numeros_extorno)]
     df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
     df_filtrado = df_filtrado[df_filtrado['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
-
     return df_filtrado[['PSP_TIN', 'FechaHora']]
+
+@st.cache_data
+def cargar_excel_interbank(archivo):
+    df = pd.read_excel(archivo, skiprows=11)
+    df['Descripción'] = df['Descripción'].astype(str).str.strip()
+    df['Número de Operación'] = df['Número de Operación'].astype(str).str.strip()
+    df['PSP_TIN'] = df['Descripción'].str.extract(r'(2\d{11})(?!\d)', expand=False)
+    df['FechaHora'] = pd.to_datetime(df['Fecha'], errors='coerce')
+    df = df.drop_duplicates(subset='PSP_TIN')
+    df = df[df['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
+    return df[['PSP_TIN', 'FechaHora']]
 
 @st.cache_data
 def cargar_metabase(archivo):
@@ -92,7 +82,7 @@ Detecta:
 - **DSN** (Depósitos sin notificación)
 - **PSD** (Pagos sin depósito)
 
-✅ Compatible con archivos .txt y .xlsx  
+✅ Compatible con archivos .txt y .xlsx (BCP, Interbank)  
 ✅ Compara solo hasta la **hora de corte del banco**
 """)
 st.divider()
@@ -106,14 +96,19 @@ hora_corte = None
 if archivo_banco is not None:
     start = time.time()
     try:
-        if archivo_banco.name.endswith('.txt'):
+        nombre = archivo_banco.name.lower()
+        if nombre.endswith('.txt'):
             st.caption("Formato detectado: CREP (.txt)")
             df_banco = cargar_txt_crep(archivo_banco)
+        elif "interbank" in nombre or "6744" in nombre:
+            st.caption("Formato detectado: Interbank (.xlsx)")
+            df_banco = cargar_excel_interbank(archivo_banco)
         else:
+            st.caption("Formato detectado: EECC BCP (.xlsx)")
             df_banco = cargar_excel_bcp(archivo_banco)
         hora_corte = df_banco['FechaHora'].max()
         st.success(f"✅ EECC del banco cargado con {len(df_banco)} operaciones únicas en {round(time.time() - start, 2)} s")
-        st.info(f"🕐 Hora de corte detectada: {hora_corte}")
+        st.info(f"🕐 Hora de corte detectada: {hora_corte.date()} {hora_corte.time() if pd.notnull(hora_corte.time()) else ''}")
     except Exception as e:
         st.error(f"❌ Error al procesar el archivo del banco: {e}")
         st.stop()
@@ -140,11 +135,11 @@ if archivo_banco and archivo_metabase:
     df_meta[col_fecha] = pd.to_datetime(df_meta[col_fecha], errors='coerce')
 
     df_meta_bcp_pen = df_meta[
-        (df_meta[col_banco].astype(str).str.upper() == "BCP") &
+        (df_meta[col_banco].astype(str).str.upper().isin(["BCP", "INTERBANK"])) &
         (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
         (df_meta[col_fecha] <= hora_corte)
     ]
-    st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN) hasta la hora de corte")
+    st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP/Interbank - PEN) hasta la hora de corte")
 
     # DSN
     dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_bcp_pen[col_psptin])]
