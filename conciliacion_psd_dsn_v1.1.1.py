@@ -45,22 +45,17 @@ def cargar_txt_crep(archivo_txt):
 
 @st.cache_data
 def cargar_excel_bcp(archivo):
-    df_raw = pd.read_excel(archivo, skiprows=7)
-    if 'Descripción operación' not in df_raw.columns:
-        raise ValueError("Formato de archivo no reconocido: falta 'Descripción operación'")
-
-    df_raw['Descripción operación'] = df_raw['Descripción operación'].astype(str).str.strip()
-    df_raw['Nº operación'] = df_raw['Nº operación'].astype(str).str.strip()
-    df_raw['PSP_TIN'] = df_raw['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
-
-    duplicados = df_raw[df_raw.duplicated(subset=['Nº operación'], keep=False)]
+    df = pd.read_excel(archivo, skiprows=7)
+    df['Descripción operación'] = df['Descripción operación'].astype(str).str.strip()
+    df['Nº operación'] = df['Nº operación'].astype(str).str.strip()
+    df['PSP_TIN'] = df['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
+    duplicados = df[df.duplicated(subset=['Nº operación'], keep=False)]
     extornos = duplicados['Descripción operación'].str.contains('Extorno', case=False, na=False)
     numeros_extorno = duplicados[extornos]['Nº operación'].unique()
-    df_filtrado = df_raw[~df_raw['Nº operación'].isin(numeros_extorno)]
+    df_filtrado = df[~df['Nº operación'].isin(numeros_extorno)]
     df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
     df_filtrado = df_filtrado[df_filtrado['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
-    df_filtrado['FechaHora'] = pd.to_datetime(df_filtrado['Fecha operación'], errors='coerce')
-    return df_filtrado[['PSP_TIN', 'FechaHora']]
+    return df_filtrado[['PSP_TIN']]
 
 @st.cache_data
 def cargar_metabase(archivo):
@@ -76,7 +71,7 @@ Detecta:
 - **PSD** (Pagos sin depósito)
 
 ✅ Compatible con archivos .txt y .xlsx  
-✅ Compara solo hasta la **hora de corte del banco** (solo CREP)
+✅ Compara solo hasta la **hora de corte del banco (CREP)**
 """)
 st.divider()
 
@@ -93,12 +88,11 @@ if archivo_banco is not None:
             st.caption("Formato detectado: CREP (.txt)")
             df_banco = cargar_txt_crep(archivo_banco)
             hora_corte = df_banco['FechaHora'].max()
+            st.info(f"🕐 Hora de corte detectada: {hora_corte}")
         else:
             st.caption("Formato detectado: EECC BCP (.xlsx)")
             df_banco = cargar_excel_bcp(archivo_banco)
-        st.success(f"✅ EECC del banco cargado con {len(df_banco)} operaciones únicas en {round(time.time() - start, 2)} s")
-        if hora_corte:
-            st.info(f"🕐 Hora de corte detectada: {hora_corte}")
+        st.success(f"✅ Archivo del banco cargado con {len(df_banco)} operaciones únicas en {round(time.time() - start, 2)} s")
     except Exception as e:
         st.error(f"❌ Error al procesar el archivo del banco: {e}")
         st.stop()
@@ -130,15 +124,14 @@ if archivo_banco and archivo_metabase:
             (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
             (df_meta[col_fecha] <= hora_corte)
         ]
+        st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN) hasta la hora de corte")
     else:
         df_meta_bcp_pen = df_meta[
             (df_meta[col_banco].astype(str).str.upper() == "BCP") &
             (df_meta[col_moneda].astype(str).str.upper() == "PEN")
         ]
+        st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN)")
 
-    st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN){' hasta la hora de corte' if hora_corte else ''}")
-
-    # DSN
     dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_bcp_pen[col_psptin])]
     st.subheader("🟡 DSN encontrados")
     st.write(f"{len(dsn)} DSN detectados")
@@ -149,7 +142,6 @@ if archivo_banco and archivo_metabase:
     st.download_button("⬇️ Descargar DSN", data=output_dsn.getvalue(),
                        file_name="DSN_encontrados.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    # PSD
     psd = df_meta_bcp_pen[~df_meta_bcp_pen[col_psptin].isin(df_banco['PSP_TIN'])]
     st.subheader("🔁 PSD encontrados")
     st.write(f"{len(psd)} PSD detectados")
