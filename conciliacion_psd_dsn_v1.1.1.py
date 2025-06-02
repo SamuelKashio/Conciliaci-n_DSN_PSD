@@ -4,9 +4,6 @@ import io
 import time
 from datetime import datetime
 
-# --------------------------
-# CARGA ARCHIVOS
-# --------------------------
 @st.cache_data
 def cargar_txt_crep(archivo_txt):
     lineas = archivo_txt.read().decode('utf-8').splitlines()
@@ -30,10 +27,10 @@ def cargar_txt_crep(archivo_txt):
                 nro_operacion = linea[124:130].strip()
                 registros.append({
                     'PSP_TIN': psp_tin,
-                    'Monto total pagado': monto,
+                    'Monto': monto,
                     'Medio de atención': medio_atencion,
-                    'Fecha de pago': fecha_pago,
-                    'Hora de atención': hora_pago,
+                    'Fecha': fecha_pago,
+                    'Hora': hora_pago,
                     'FechaHora': fecha_hora_pago,
                     'Nº operación': nro_operacion
                 })
@@ -48,22 +45,25 @@ def cargar_excel_bcp(archivo):
     df = pd.read_excel(archivo, skiprows=7)
     df['Descripción operación'] = df['Descripción operación'].astype(str).str.strip()
     df['Nº operación'] = df['Nº operación'].astype(str).str.strip()
+    df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce')
+    df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
     df['PSP_TIN'] = df['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
+
     duplicados = df[df.duplicated(subset=['Nº operación'], keep=False)]
     extornos = duplicados['Descripción operación'].str.contains('Extorno', case=False, na=False)
     numeros_extorno = duplicados[extornos]['Nº operación'].unique()
     df_filtrado = df[~df['Nº operación'].isin(numeros_extorno)]
-    df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
+
     df_filtrado = df_filtrado[df_filtrado['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
-    return df_filtrado[['PSP_TIN']]
+    df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
+
+    return df_filtrado[['PSP_TIN', 'Monto', 'Fecha', 'Nº operación']]
 
 @st.cache_data
 def cargar_metabase(archivo):
     return pd.read_excel(archivo)
 
-# --------------------------
-# INTERFAZ
-# --------------------------
+# --- INTERFAZ ---
 st.title("Conciliación de Pagos - Kashio")
 st.markdown("""
 Detecta:
