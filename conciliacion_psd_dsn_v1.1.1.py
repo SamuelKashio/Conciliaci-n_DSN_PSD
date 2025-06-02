@@ -49,13 +49,15 @@ def cargar_excel_bcp(archivo):
     df['Descripción operación'] = df['Descripción operación'].astype(str).str.strip()
     df['Nº operación'] = df['Nº operación'].astype(str).str.strip()
     df['PSP_TIN'] = df['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
+    df['Fecha'] = pd.to_datetime(df['Fecha operación'], errors='coerce')
+    df['Monto'] = df['Monto'].astype(float)
     duplicados = df[df.duplicated(subset=['Nº operación'], keep=False)]
     extornos = duplicados['Descripción operación'].str.contains('Extorno', case=False, na=False)
     numeros_extorno = duplicados[extornos]['Nº operación'].unique()
     df_filtrado = df[~df['Nº operación'].isin(numeros_extorno)]
     df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
     df_filtrado = df_filtrado[df_filtrado['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
-    return df_filtrado[['PSP_TIN']]
+    return df_filtrado[['PSP_TIN', 'Nº operación', 'Monto', 'Fecha']]
 
 @st.cache_data
 def cargar_metabase(archivo):
