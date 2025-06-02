@@ -38,7 +38,7 @@ def cargar_txt_crep(archivo_txt):
                 continue
     df = pd.DataFrame(registros)
     df = df[df['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
-    return df.drop_duplicates(subset='PSP_TIN')
+    return df.drop_duplicates(subset='PSP_TIN'), True
 
 @st.cache_data
 def cargar_excel_bcp(archivo):
@@ -48,22 +48,19 @@ def cargar_excel_bcp(archivo):
     df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce')
     df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
     df['PSP_TIN'] = df['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
-
     duplicados = df[df.duplicated(subset=['Nº operación'], keep=False)]
     extornos = duplicados['Descripción operación'].str.contains('Extorno', case=False, na=False)
     numeros_extorno = duplicados[extornos]['Nº operación'].unique()
     df_filtrado = df[~df['Nº operación'].isin(numeros_extorno)]
-
     df_filtrado = df_filtrado[df_filtrado['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
     df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
-
-    return df_filtrado[['PSP_TIN', 'Monto', 'Fecha', 'Nº operación']]
+    return df_filtrado[['PSP_TIN', 'Monto', 'Fecha', 'Nº operación']], False
 
 @st.cache_data
 def cargar_metabase(archivo):
     return pd.read_excel(archivo)
 
-# --- INTERFAZ ---
+# INTERFAZ
 st.title("Conciliación de Pagos - Kashio")
 st.markdown("""
 Detecta:
@@ -80,18 +77,19 @@ archivo_metabase = st.file_uploader("📥 Subir archivo de Metabase (.xlsx)", ty
 
 df_banco = None
 hora_corte = None
+es_crep = False
 
 if archivo_banco is not None:
     start = time.time()
     try:
         if archivo_banco.name.endswith('.txt'):
             st.caption("Formato detectado: CREP (.txt)")
-            df_banco = cargar_txt_crep(archivo_banco)
+            df_banco, es_crep = cargar_txt_crep(archivo_banco)
             hora_corte = df_banco['FechaHora'].max()
             st.info(f"🕐 Hora de corte detectada: {hora_corte}")
         else:
             st.caption("Formato detectado: EECC BCP (.xlsx)")
-            df_banco = cargar_excel_bcp(archivo_banco)
+            df_banco, es_crep = cargar_excel_bcp(archivo_banco)
         st.success(f"✅ Archivo del banco cargado con {len(df_banco)} operaciones únicas en {round(time.time() - start, 2)} s")
     except Exception as e:
         st.error(f"❌ Error al procesar el archivo del banco: {e}")
@@ -135,6 +133,8 @@ if archivo_banco and archivo_metabase:
     dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_bcp_pen[col_psptin])]
     st.subheader("🟡 DSN encontrados")
     st.write(f"{len(dsn)} DSN detectados")
+    if not es_crep:
+        dsn['Fecha'] = dsn['Fecha'].dt.strftime('%d/%m/%Y')
     st.dataframe(dsn)
     output_dsn = io.BytesIO()
     with pd.ExcelWriter(output_dsn, engine='openpyxl') as writer:
