@@ -45,34 +45,38 @@ def cargar_txt_crep(archivo_txt):
 
 @st.cache_data
 def cargar_excel_bcp(archivo):
-    df_check = pd.read_excel(archivo, nrows=10)
-    columnas = df_check.columns.str.lower()
-
-    if 'operación - hora' in columnas:
-        # Movimientos históricos
-        df = pd.read_excel(archivo, skiprows=4)
-        col_desc = 'Descripción'
-        col_fecha = 'Fecha'
-        col_hora = 'Operación - Hora'
-        col_nro_op = 'Número de Operación'
-    else:
-        # Movimientos diarios
-        df = pd.read_excel(archivo, skiprows=7)
+    # Primero intenta cargar como movimientos históricos
+    try:
+        df = pd.read_excel(archivo, skiprows=4)  # Encabezado en fila 5
+        if 'Descripción' in df.columns and 'Número de Operación' in df.columns:
+            st.caption("Formato detectado: Movimientos Históricos (.xlsx)")
+            col_desc = 'Descripción'
+            col_nro_op = 'Número de Operación'
+            col_fecha = 'Fecha'
+            col_hora = 'Operación - Hora'
+        else:
+            raise ValueError("No es formato histórico")
+    except:
+        # Si falla, intenta como movimientos diarios
+        df = pd.read_excel(archivo, skiprows=7)  # Encabezado en fila 8
+        st.caption("Formato detectado: Movimientos Diarios (.xlsx)")
         col_desc = 'Descripción operación'
+        col_nro_op = 'Nº operación'
         col_fecha = 'Fecha operación'
         col_hora = 'Hora'
-        col_nro_op = 'Nº operación'
 
     df[col_desc] = df[col_desc].astype(str).str.strip()
     df[col_nro_op] = df[col_nro_op].astype(str).str.strip()
     df['PSP_TIN'] = df[col_desc].str.extract(r'(2\d{11})(?!\d)', expand=False)
     df['FechaHora'] = pd.to_datetime(df[col_fecha].astype(str) + ' ' + df[col_hora].astype(str), errors='coerce')
+
     duplicados = df[df.duplicated(subset=[col_nro_op], keep=False)]
     extornos = duplicados[col_desc].str.contains('Extorno', case=False, na=False)
     numeros_extorno = duplicados[extornos][col_nro_op].unique()
     df_filtrado = df[~df[col_nro_op].isin(numeros_extorno)]
     df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
     df_filtrado = df_filtrado[df_filtrado['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
+
     return df_filtrado[['PSP_TIN', 'FechaHora']]
 
 @st.cache_data
@@ -106,7 +110,6 @@ if archivo_banco is not None:
             st.caption("Formato detectado: CREP (.txt)")
             df_banco = cargar_txt_crep(archivo_banco)
         else:
-            st.caption("Formato detectado: EECC BCP (.xlsx)")
             df_banco = cargar_excel_bcp(archivo_banco)
         hora_corte = df_banco['FechaHora'].max()
         st.success(f"✅ EECC del banco cargado con {len(df_banco)} operaciones únicas en {round(time.time() - start, 2)} s")
