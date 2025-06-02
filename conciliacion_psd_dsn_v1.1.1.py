@@ -45,18 +45,22 @@ def cargar_txt_crep(archivo_txt):
 
 @st.cache_data
 def cargar_excel_bcp(archivo):
-    try:
-        df = pd.read_excel(archivo, skiprows=4)  # Intentar como "movimientos históricos"
+    df_preview = pd.read_excel(archivo, nrows=5)
+    if 'Descripción operación' in df_preview.columns:
+        df = pd.read_excel(archivo, skiprows=7)
         col_desc = 'Descripción operación'
         col_fecha = 'Fecha'
-        col_hora = 'Operación - Hora'
-        col_nro_op = 'Operación - Número'
-    except:
-        df = pd.read_excel(archivo, skiprows=7)  # Formato "movimientos diarios"
-        col_desc = 'Descripción operación'
-        col_fecha = 'Fecha operación'
         col_hora = 'Hora'
         col_nro_op = 'Nº operación'
+    else:
+        df = pd.read_excel(archivo, skiprows=10)
+        df.columns = df.iloc[0]
+        df = df[1:]
+        df = df.rename(columns=lambda x: str(x).strip())
+        col_desc = 'Descripción'
+        col_fecha = 'Fecha'
+        col_hora = 'Operación - Hora'
+        col_nro_op = 'Número de Operación'
 
     df[col_desc] = df[col_desc].astype(str).str.strip()
     df[col_nro_op] = df[col_nro_op].astype(str).str.strip()
