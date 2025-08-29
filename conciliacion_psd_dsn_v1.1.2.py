@@ -4,7 +4,8 @@ import io
 import time
 from datetime import datetime
 
-@st.cache_data
+# === CARGA DE ARCHIVOS ===
+@st.cache_data(ttl=600, max_entries=5)
 def cargar_txt_crep(archivo_txt):
     lineas = archivo_txt.read().decode('utf-8').splitlines()
     registros = []
@@ -22,7 +23,6 @@ def cargar_txt_crep(archivo_txt):
                 hora = linea[168:170]
                 minuto = linea[170:172]
                 segundo = linea[172:174]
-                hora_pago = f"{hora}:{minuto}:{segundo}"
                 fecha_hora_pago = datetime.strptime(f"{dia}/{mes}/{anio} {hora}:{minuto}:{segundo}", "%d/%m/%Y %H:%M:%S")
                 nro_operacion = linea[124:130].strip()
                 registros.append({
@@ -30,7 +30,7 @@ def cargar_txt_crep(archivo_txt):
                     'Monto': monto,
                     'Medio de atención': medio_atencion,
                     'Fecha': fecha_pago,
-                    'Hora': hora_pago,
+                    'Hora': f"{hora}:{minuto}:{segundo}",
                     'FechaHora': fecha_hora_pago,
                     'Nº operación': nro_operacion
                 })
@@ -40,14 +40,17 @@ def cargar_txt_crep(archivo_txt):
     df = df[df['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
     return df.drop_duplicates(subset='PSP_TIN'), True
 
-@st.cache_data
+@st.cache_data(ttl=600, max_entries=5)
 def cargar_excel_bcp(archivo):
-    df = pd.read_excel(archivo, skiprows=7)
+    # Optimizar lectura de excel
+    df = pd.read_excel(archivo, skiprows=7, dtype={"Nº operación": str})
     df['Descripción operación'] = df['Descripción operación'].astype(str).str.strip()
     df['Nº operación'] = df['Nº operación'].astype(str).str.strip()
     df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce')
     df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
     df['PSP_TIN'] = df['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
+
+    # Detectar y filtrar extornos
     duplicados = df[df.duplicated(subset=['Nº operación'], keep=False)]
     extornos = duplicados['Descripción operación'].str.contains('Extorno', case=False, na=False)
     numeros_extorno = duplicados[extornos]['Nº operación'].unique()
@@ -56,11 +59,11 @@ def cargar_excel_bcp(archivo):
     df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
     return df_filtrado[['PSP_TIN', 'Monto', 'Fecha', 'Nº operación']], False
 
-@st.cache_data
+# No cacheamos metabase porque puede ser enorme
 def cargar_metabase(archivo):
-    return pd.read_excel(archivo)
+    return pd.read_excel(archivo, dtype=str)
 
-# INTERFAZ
+# === INTERFAZ ===
 st.title("Conciliación de Pagos - Kashio")
 st.markdown("""
 Detecta:
@@ -79,6 +82,7 @@ df_banco = None
 hora_corte = None
 es_crep = False
 
+# === PROCESAR BANCO ===
 if archivo_banco is not None:
     start = time.time()
     try:
@@ -95,6 +99,7 @@ if archivo_banco is not None:
         st.error(f"❌ Error al procesar el archivo del banco: {e}")
         st.stop()
 
+# === PROCESAR METABASE Y CONCILIAR ===
 if archivo_banco and archivo_metabase:
     start = time.time()
     df_meta = cargar_metabase(archivo_metabase)
@@ -130,22 +135,24 @@ if archivo_banco and archivo_metabase:
         ]
         st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN)")
 
+    # === DSN ===
     dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_bcp_pen[col_psptin])]
     st.subheader("🟡 DSN encontrados")
     st.write(f"{len(dsn)} DSN detectados")
     if not es_crep:
-        dsn['Fecha'] = dsn['Fecha'].dt.strftime('%d/%m/%Y')
-    st.dataframe(dsn)
+        dsn['Fecha'] = pd.to_datetime(dsn['Fecha'], errors='coerce').dt.strftime('%d/%m/%Y')
+    st.dataframe(dsn.head(100))  # mostrar solo primeras 100 filas
     output_dsn = io.BytesIO()
     with pd.ExcelWriter(output_dsn, engine='openpyxl') as writer:
         dsn.to_excel(writer, index=False)
     st.download_button("⬇️ Descargar DSN", data=output_dsn.getvalue(),
                        file_name="DSN_encontrados.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+    # === PSD ===
     psd = df_meta_bcp_pen[~df_meta_bcp_pen[col_psptin].isin(df_banco['PSP_TIN'])]
     st.subheader("🔁 PSD encontrados")
     st.write(f"{len(psd)} PSD detectados")
-    st.dataframe(psd)
+    st.dataframe(psd.head(100))  # mostrar solo primeras 100 filas
     output_psd = io.BytesIO()
     with pd.ExcelWriter(output_psd, engine='openpyxl') as writer:
         psd.to_excel(writer, index=False)
