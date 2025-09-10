@@ -133,7 +133,7 @@ if archivo_banco and archivo_metabase:
             (df_meta[col_banco].astype(str).str.upper() == "(BCP) - Banco de Crédito del Perú") &
             (df_meta[col_moneda].astype(str).str.upper() == "PEN")
         ]
-        st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN)")
+        st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase ((BCP) - Banco de Crédito del Perú - PEN)")
 
     # === DSN ===
     dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_bcp_pen[col_psptin])]
