@@ -127,7 +127,7 @@ if archivo_banco and archivo_metabase:
             (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
             (df_meta[col_fecha] <= hora_corte)
         ]
-        st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN) hasta la hora de corte")
+        st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase ((BCP) - Banco de Crédito del Perú - PEN) hasta la hora de corte")
     else:
         df_meta_bcp_pen = df_meta[
             (df_meta[col_banco].astype(str).str.upper() == "(BCP) - Banco de Crédito del Perú") &
