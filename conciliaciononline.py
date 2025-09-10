@@ -100,40 +100,40 @@ if archivo_banco is not None:
         st.stop()
 
 # === PROCESAR METABASE Y CONCILIAR ===
+
 if archivo_banco and archivo_metabase:
     start = time.time()
     df_meta = cargar_metabase(archivo_metabase)
     st.caption(f"✅ Metabase cargado en {round(time.time() - start, 2)} segundos")
 
-    columnas = df_meta.columns.str.lower()
-    if 'deuda_psptin' in columnas and 'banco' in columnas and 'moneda' in columnas:
-        col_psptin = df_meta.columns[columnas.get_loc('deuda_psptin')]
-        col_banco = df_meta.columns[columnas.get_loc('banco')]
-        col_moneda = df_meta.columns[columnas.get_loc('moneda')]
-        col_fecha = df_meta.columns[columnas.get_loc('pc_create_date_gmt_peru')]
-    else:
-        col_psptin = df_meta.columns[26]
-        col_banco = df_meta.columns[10]
-        col_moneda = df_meta.columns[21]
-        col_fecha = df_meta.columns[15]
+    # Columnas nuevas del backoffice
+    col_psptin = "Deuda_PspTin"
+    col_banco = "Banco"
+    col_moneda = "Moneda"
+    col_fecha = "PC_create_date_GMT_Peru"
 
+    # Normalizar PSP_TIN
     df_meta[col_psptin] = df_meta[col_psptin].astype(str)
     df_meta = df_meta.drop_duplicates(subset=col_psptin)
     df_meta[col_fecha] = pd.to_datetime(df_meta[col_fecha], errors='coerce')
 
+    # Normalizar Banco (ej. "(BCP) - Banco de Crédito del Perú" → "BCP")
+    df_meta[col_banco] = df_meta[col_banco].astype(str).str.upper().str.extract(r"(BCP)")
+
     if hora_corte:
         df_meta_bcp_pen = df_meta[
-            (df_meta[col_banco].astype(str).str.upper() == "BCP") &
+            (df_meta[col_banco] == "BCP") &
             (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
             (df_meta[col_fecha] <= hora_corte)
         ]
         st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN) hasta la hora de corte")
     else:
         df_meta_bcp_pen = df_meta[
-            (df_meta[col_banco].astype(str).str.upper() == "BCP") &
+            (df_meta[col_banco] == "BCP") &
             (df_meta[col_moneda].astype(str).str.upper() == "PEN")
         ]
         st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN)")
+
 
     # === DSN ===
     dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_bcp_pen[col_psptin])]
