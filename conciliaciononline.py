@@ -141,7 +141,7 @@ if archivo_banco and archivo_metabase:
     st.write(f"{len(dsn)} DSN detectados")
     if not es_crep:
         dsn['Fecha'] = pd.to_datetime(dsn['Fecha'], errors='coerce').dt.strftime('%d/%m/%Y')
-    st.dataframe(dsn.head(100))  # mostrar solo primeras 100 filas
+    st.dataframe(dsn.head(2000))  # mostrar solo primeras 100 filas
     output_dsn = io.BytesIO()
     with pd.ExcelWriter(output_dsn, engine='openpyxl') as writer:
         dsn.to_excel(writer, index=False)
@@ -152,7 +152,7 @@ if archivo_banco and archivo_metabase:
     psd = df_meta_bcp_pen[~df_meta_bcp_pen[col_psptin].isin(df_banco['PSP_TIN'])]
     st.subheader("🔁 PSD encontrados")
     st.write(f"{len(psd)} PSD detectados")
-    st.dataframe(psd.head(100))  # mostrar solo primeras 100 filas
+    st.dataframe(psd.head(2000))  # mostrar solo primeras 100 filas
     output_psd = io.BytesIO()
     with pd.ExcelWriter(output_psd, engine='openpyxl') as writer:
         psd.to_excel(writer, index=False)
