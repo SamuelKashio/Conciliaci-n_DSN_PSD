@@ -4,9 +4,6 @@ import io
 import time
 from datetime import datetime
 
-# -------------------------------------------------
-# CARGA CREP TXT (BCP)
-# -------------------------------------------------
 @st.cache_data
 def cargar_txt_crep(archivo_txt):
     lineas = archivo_txt.read().decode('utf-8').splitlines()
@@ -47,9 +44,6 @@ def cargar_txt_crep(archivo_txt):
     return df.drop_duplicates(subset='PSP_TIN'), True
 
 
-# -------------------------------------------------
-# CARGA EECC BCP EXCEL
-# -------------------------------------------------
 @st.cache_data
 def cargar_excel_bcp(archivo):
     df = pd.read_excel(archivo, skiprows=7)
@@ -70,59 +64,58 @@ def cargar_excel_bcp(archivo):
     return df_filtrado[['PSP_TIN', 'Monto', 'Fecha', 'Nº operación']], False
 
 
-# -------------------------------------------------
-# CARGA EECC BBVA EXCEL
-# -------------------------------------------------
+# NUEVO: lector para EECC BBVA
 @st.cache_data
 def cargar_excel_bbva(archivo):
+    # El BBVA trae cabeceras y texto arriba, saltamos las primeras líneas
     df = pd.read_excel(archivo, skiprows=10)
+
     cols = df.columns
 
+    # Columnas típicas del EECC BBVA
+    col_fecha = 'F.Operación' if 'F.Operación' in cols else cols[0]
     col_concepto = 'Concepto' if 'Concepto' in cols else cols[3]
-
     if 'Nº Operación' in cols:
         col_nro_op = 'Nº Operación'
     elif 'N° Operación' in cols:
         col_nro_op = 'N° Operación'
     else:
         col_nro_op = cols[4]
-
     col_importe = 'Importe' if 'Importe' in cols else cols[5]
-    col_fecha = 'F.Operación' if 'F.Operación' in cols else cols[0]
 
+    # Limpieza básica
     df[col_concepto] = df[col_concepto].astype(str).str.strip()
     df[col_nro_op] = df[col_nro_op].astype(str).str.strip()
 
+    # Monto y fecha
     df['Monto'] = pd.to_numeric(df[col_importe], errors='coerce')
+    # Formato típico: 11-12-2025
     df['Fecha'] = pd.to_datetime(df[col_fecha], format='%d-%m-%Y', errors='coerce')
 
+    # Extraer PSP_TIN desde Concepto (12 dígitos que empiezan con 2)
     df['PSP_TIN'] = df[col_concepto].str.extract(r'(2\d{11})(?!\d)', expand=False)
+
+    # Solo PSP_TIN válidos
     df = df[df['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
 
+    # Extornos en BBVA: misma idea de BCP pero buscando "Extorno" en el concepto
     duplicados = df[df.duplicated(subset=[col_nro_op], keep=False)]
-    ops_extorno = duplicados.groupby(col_nro_op)['Monto'].apply(
-        lambda s: s.gt(0).any() and s.lt(0).any()
-    )
-    numeros_extorno = ops_extorno[ops_extorno].index
-
+    extornos = duplicados[col_concepto].str.contains('Extorno', case=False, na=False)
+    numeros_extorno = duplicados[extornos][col_nro_op].unique()
     df_filtrado = df[~df[col_nro_op].isin(numeros_extorno)]
-    df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
 
+    df_filtrado = df_filtrado.drop_duplicates(subset='PSP_TIN')
     df_filtrado = df_filtrado.rename(columns={col_nro_op: 'Nº operación'})
+
     return df_filtrado[['PSP_TIN', 'Monto', 'Fecha', 'Nº operación']], False
 
 
-# -------------------------------------------------
-# CARGA METABASE
-# -------------------------------------------------
 @st.cache_data
 def cargar_metabase(archivo):
     return pd.read_excel(archivo)
 
 
-# -------------------------------------------------
-# INTERFAZ STREAMLIT
-# -------------------------------------------------
+# INTERFAZ
 st.title("Conciliación de Pagos - Kashio")
 st.markdown("""
 Detecta:
@@ -130,6 +123,7 @@ Detecta:
 - **PSD** (Pagos sin depósito)
 
 ✅ Compatible con archivos .txt y .xlsx  
+✅ Compara solo hasta la **hora de corte del banco (CREP)**
 """)
 st.divider()
 
@@ -139,12 +133,8 @@ archivo_metabase = st.file_uploader("📥 Subir archivo de Metabase (.xlsx)", ty
 df_banco = None
 hora_corte = None
 es_crep = False
-banco_archivo = None
+banco_archivo = None  # 'BCP' o 'BBVA'
 
-
-# -------------------------------------------------
-# PROCESO DE CARGA ARCHIVO BANCO
-# -------------------------------------------------
 if archivo_banco is not None:
     start = time.time()
     try:
@@ -153,7 +143,9 @@ if archivo_banco is not None:
             df_banco, es_crep = cargar_txt_crep(archivo_banco)
             hora_corte = df_banco['FechaHora'].max()
             banco_archivo = "BCP"
+            st.info(f"🕐 Hora de corte detectada: {hora_corte}")
         else:
+            # Detectamos si el Excel es BBVA o BCP
             archivo_banco.seek(0)
             preview = pd.read_excel(archivo_banco, nrows=15, header=None)
             archivo_banco.seek(0)
@@ -168,87 +160,88 @@ if archivo_banco is not None:
                 banco_archivo = "BCP"
 
         st.success(
-            f"Archivo del banco cargado con {len(df_banco)} operaciones únicas "
+            f"✅ Archivo del banco cargado con {len(df_banco)} operaciones únicas "
             f"en {round(time.time() - start, 2)} s"
         )
-
     except Exception as e:
-        st.error(f"Error al procesar el archivo del banco: {e}")
+        st.error(f"❌ Error al procesar el archivo del banco: {e}")
         st.stop()
 
-
-# -------------------------------------------------
-# CRUCE CON METABASE
-# -------------------------------------------------
 if archivo_banco and archivo_metabase:
     start = time.time()
     df_meta = cargar_metabase(archivo_metabase)
+    st.caption(f"✅ Metabase cargado en {round(time.time() - start, 2)} segundos")
 
-    columnas_norm = df_meta.columns.str.lower().str.strip()
+    # Usamos solo nombres de columnas (nuevo formato)
+    columnas = df_meta.columns.str.lower().str.strip()
 
-    mapa_columnas = {
-        "psptin": ["deuda_psptin"],
-        "banco": ["banco"],
-        "moneda": ["moneda", " moneda"],
-        "fecha": ["pc_create_date_gmt_peru"]
-    }
-
-    def encontrar(nombres):
-        for name in nombres:
-            if name in columnas_norm:
-                return df_meta.columns[columnas_norm.get_loc(name)]
-        return None
-
-    col_psptin = encontrar(mapa_columnas["psptin"])
-    col_banco = encontrar(mapa_columnas["banco"])
-    col_moneda = encontrar(mapa_columnas["moneda"])
-    col_fecha = encontrar(mapa_columnas["fecha"])
-
-    if not all([col_psptin, col_banco, col_moneda, col_fecha]):
-        st.error("❌ No se encontraron las columnas necesarias en Metabase.")
-        st.write(list(df_meta.columns))
+    if 'deuda_psptin' in columnas and 'banco' in columnas and 'moneda' in columnas:
+        col_psptin = df_meta.columns[columnas.get_loc('deuda_psptin')]
+        col_banco = df_meta.columns[columnas.get_loc('banco')]
+        col_moneda = df_meta.columns[columnas.get_loc('moneda')]
+        col_fecha = df_meta.columns[columnas.get_loc('pc_create_date_gmt_peru')]
+    else:
+        st.error("❌ No se encontraron las columnas esperadas en el archivo de Metabase.")
+        st.write("Columnas encontradas:", list(df_meta.columns))
         st.stop()
 
-    # Normalizar PSP_TIN de Metabase
+    # Normalizamos Metabase igual que antes
     df_meta[col_psptin] = df_meta[col_psptin].astype(str)
-    df_meta["PSP_TIN_META"] = df_meta[col_psptin].str.extract(r'(2\d{11})(?!\d)', expand=False)
-    df_meta = df_meta[df_meta["PSP_TIN_META"].notna()]
-    df_meta = df_meta.drop_duplicates(subset="PSP_TIN_META")
-
+    df_meta = df_meta.drop_duplicates(subset=col_psptin)
     df_meta[col_fecha] = pd.to_datetime(df_meta[col_fecha], errors='coerce')
 
-    # Filtrar Metabase según banco y moneda PEN
-    df_meta_filtrado = df_meta[
-        (df_meta[col_banco].astype(str).str.upper().str.contains(banco_archivo)) &
-        (df_meta[col_moneda].astype(str).str.upper().str.strip() == "PEN")
-    ]
+    # Filtro por banco dinámico (BCP o BBVA) y moneda PEN
+    if hora_corte:
+        df_meta_filtrado = df_meta[
+            (df_meta[col_banco].astype(str).str.upper() == banco_archivo) &
+            (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
+            (df_meta[col_fecha] <= hora_corte)
+        ]
+        st.info(
+            f"🔍 {len(df_meta_filtrado)} registros filtrados de Metabase "
+            f"({banco_archivo} - PEN) hasta la hora de corte"
+        )
+    else:
+        df_meta_filtrado = df_meta[
+            (df_meta[col_banco].astype(str).str.upper() == banco_archivo) &
+            (df_meta[col_moneda].astype(str).str.upper() == "PEN")
+        ]
+        st.info(
+            f"🔍 {len(df_meta_filtrado)} registros filtrados de Metabase "
+            f"({banco_archivo} - PEN)"
+        )
 
-    # ----------------------
-    # CÁLCULO DE DSN Y PSD
-    # ----------------------
-
-    # DSN → Están en banco pero NO en Metabase
-    dsn = df_banco[~df_banco["PSP_TIN"].isin(df_meta_filtrado["PSP_TIN_META"])]
-
+    # MISMA LÓGICA ORIGINAL:
+    # DSN = PSP_TIN del banco que NO están en Metabase
+    dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_filtrado[col_psptin])]
     st.subheader("🟡 DSN encontrados")
-    st.write(len(dsn))
+    st.write(f"{len(dsn)} DSN detectados")
+    if not es_crep:
+        dsn['Fecha'] = dsn['Fecha'].dt.strftime('%d/%m/%Y')
     st.dataframe(dsn)
 
-    # Exportar DSN
-    out_dsn = io.BytesIO()
-    with pd.ExcelWriter(out_dsn, engine="openpyxl") as writer:
+    output_dsn = io.BytesIO()
+    with pd.ExcelWriter(output_dsn, engine='openpyxl') as writer:
         dsn.to_excel(writer, index=False)
-    st.download_button("⬇ Descargar DSN", out_dsn.getvalue(), "DSN.xlsx")
+    st.download_button(
+        "⬇️ Descargar DSN",
+        data=output_dsn.getvalue(),
+        file_name="DSN_encontrados.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
-    # PSD → Están en Metabase pero NO en banco
-    psd = df_meta_filtrado[~df_meta_filtrado["PSP_TIN_META"].isin(df_banco["PSP_TIN"])]
-
+    # PSD = PSP_TIN en Metabase que NO están en el banco
+    psd = df_meta_filtrado[~df_meta_filtrado[col_psptin].isin(df_banco['PSP_TIN'])]
     st.subheader("🔁 PSD encontrados")
-    st.write(len(psd))
+    st.write(f"{len(psd)} PSD detectados")
     st.dataframe(psd)
 
-    # Exportar PSD
-    out_psd = io.BytesIO()
-    with pd.ExcelWriter(out_psd, engine="openpyxl") as writer:
+    output_psd = io.BytesIO()
+    with pd.ExcelWriter(output_psd, engine='openpyxl') as writer:
         psd.to_excel(writer, index=False)
-    st.download_button("⬇ Descargar PSD", out_psd.getvalue(), "PSD.xlsx")
+    st.download_button(
+        "⬇️ Descargar PSD",
+        data=output_psd.getvalue(),
+        file_name="PSD_encontrados.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
