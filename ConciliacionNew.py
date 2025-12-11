@@ -73,7 +73,7 @@ def cargar_excel_bcp(archivo):
 
 
 # -------------------------------------------------
-# CARGA EECC BBVA EXCEL (NUEVO)
+# CARGA EECC BBVA EXCEL
 # -------------------------------------------------
 @st.cache_data
 def cargar_excel_bbva(archivo):
@@ -161,6 +161,8 @@ archivo_metabase = st.file_uploader("📥 Subir archivo de Metabase (.xlsx)", ty
 df_banco = None
 hora_corte = None
 es_crep = False
+banco_archivo = None  # 'BCP' o 'BBVA' según el archivo cargado
+
 
 # -------------------------------------------------
 # PROCESO DE CARGA ARCHIVO BANCO
@@ -169,10 +171,11 @@ if archivo_banco is not None:
     start = time.time()
     try:
         if archivo_banco.name.endswith('.txt'):
-            # CREP
+            # CREP (BCP)
             st.caption("Formato detectado: CREP (.txt)")
             df_banco, es_crep = cargar_txt_crep(archivo_banco)
             hora_corte = df_banco['FechaHora'].max()
+            banco_archivo = "BCP"  # CREP es BCP
             st.info(f"🕐 Hora de corte detectada: {hora_corte}")
         else:
             # Excel: detectar si es BBVA o BCP
@@ -183,57 +186,94 @@ if archivo_banco is not None:
             if preview.iloc[:, 0].astype(str).str.contains('Movimientos del Día', na=False).any():
                 st.caption("Formato detectado: EECC BBVA (.xlsx)")
                 df_banco, es_crep = cargar_excel_bbva(archivo_banco)
+                banco_archivo = "BBVA"
             else:
                 st.caption("Formato detectado: EECC BCP (.xlsx)")
                 df_banco, es_crep = cargar_excel_bcp(archivo_banco)
+                banco_archivo = "BCP"
 
-        st.success(f"✅ Archivo del banco cargado con {len(df_banco)} operaciones únicas en {round(time.time() - start, 2)} s")
+        st.success(
+            f"✅ Archivo del banco cargado con {len(df_banco)} operaciones únicas en "
+            f"{round(time.time() - start, 2)} s"
+        )
     except Exception as e:
         st.error(f"❌ Error al procesar el archivo del banco: {e}")
         st.stop()
+
 
 # -------------------------------------------------
 # CRUCE CON METABASE: DSN y PSD
 # -------------------------------------------------
 if archivo_banco and archivo_metabase:
+    if banco_archivo is None:
+        st.error("❌ No se pudo determinar el banco del archivo cargado (BCP/BBVA).")
+        st.stop()
+
     start = time.time()
     df_meta = cargar_metabase(archivo_metabase)
     st.caption(f"✅ Metabase cargado en {round(time.time() - start, 2)} segundos")
 
+    # --- Detección robusta de columnas en Metabase ---
     columnas = df_meta.columns.str.lower()
-    if 'deuda_psptin' in columnas and 'banco' in columnas and 'moneda' in columnas:
-        col_psptin = df_meta.columns[columnas.get_loc('deuda_psptin')]
-        col_banco = df_meta.columns[columnas.get_loc('banco')]
-        col_moneda = df_meta.columns[columnas.get_loc('moneda')]
-        col_fecha = df_meta.columns[columnas.get_loc('pc_create_date_gmt_peru')]
-    else:
-        # fallback por posición, como ya tenías
-        col_psptin = df_meta.columns[26]
-        col_banco = df_meta.columns[10]
-        col_moneda = df_meta.columns[21]
-        col_fecha = df_meta.columns[15]
 
+    mapa_columnas = {
+        "psptin": ["deuda_psptin", "psp_tin", "tin", "psptin"],
+        "banco": ["banco", "bank"],
+        "moneda": ["moneda", "currency"],
+        "fecha": ["pc_create_date_gmt_peru", "fecha", "date"]
+    }
+
+    def encontrar_columna(lista_nombres):
+        for name in lista_nombres:
+            if name in columnas:
+                return df_meta.columns[columnas.get_loc(name)]
+        return None
+
+    col_psptin = encontrar_columna(mapa_columnas["psptin"])
+    col_banco = encontrar_columna(mapa_columnas["banco"])
+    col_moneda = encontrar_columna(mapa_columnas["moneda"])
+    col_fecha = encontrar_columna(mapa_columnas["fecha"])
+
+    if not all([col_psptin, col_banco, col_moneda, col_fecha]):
+        st.error("""
+        ❌ No se encontraron las columnas necesarias en el archivo de Metabase.
+
+        Se requieren (con cualquiera de estos nombres):
+        - PSP_TIN: deuda_psptin, psp_tin, tin, psptin
+        - Banco: banco, bank
+        - Moneda: moneda, currency
+        - Fecha: pc_create_date_gmt_peru, fecha, date
+        """)
+        st.stop()
+
+    # Normalizaciones y duplicados
     df_meta[col_psptin] = df_meta[col_psptin].astype(str)
     df_meta = df_meta.drop_duplicates(subset=col_psptin)
     df_meta[col_fecha] = pd.to_datetime(df_meta[col_fecha], errors='coerce')
 
-    # Filtrado por BCP/PEN y hora de corte (si aplica)
+    # Filtrado por banco (BCP/BBVA), PEN y hora de corte si aplica
     if hora_corte:
-        df_meta_bcp_pen = df_meta[
-            (df_meta[col_banco].astype(str).str.upper() == "BCP") &
+        df_meta_banco_pen = df_meta[
+            (df_meta[col_banco].astype(str).str.upper() == banco_archivo) &
             (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
             (df_meta[col_fecha] <= hora_corte)
         ]
-        st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN) hasta la hora de corte")
+        st.info(
+            f"🔍 {len(df_meta_banco_pen)} registros filtrados de Metabase "
+            f"({banco_archivo} - PEN) hasta la hora de corte"
+        )
     else:
-        df_meta_bcp_pen = df_meta[
-            (df_meta[col_banco].astype(str).str.upper() == "BCP") &
+        df_meta_banco_pen = df_meta[
+            (df_meta[col_banco].astype(str).str.upper() == banco_archivo) &
             (df_meta[col_moneda].astype(str).str.upper() == "PEN")
         ]
-        st.info(f"🔍 {len(df_meta_bcp_pen)} registros filtrados de Metabase (BCP - PEN)")
+        st.info(
+            f"🔍 {len(df_meta_banco_pen)} registros filtrados de Metabase "
+            f"({banco_archivo} - PEN)"
+        )
 
     # DSN: están en el banco pero no en Metabase
-    dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_bcp_pen[col_psptin])]
+    dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_banco_pen[col_psptin])]
     st.subheader("🟡 DSN encontrados")
     st.write(f"{len(dsn)} DSN detectados")
     if not es_crep:
@@ -252,7 +292,7 @@ if archivo_banco and archivo_metabase:
     )
 
     # PSD: están en Metabase pero no en el banco
-    psd = df_meta_bcp_pen[~df_meta_bcp_pen[col_psptin].isin(df_banco['PSP_TIN'])]
+    psd = df_meta_banco_pen[~df_meta_banco_pen[col_psptin].isin(df_banco['PSP_TIN'])]
     st.subheader("🔁 PSD encontrados")
     st.write(f"{len(psd)} PSD detectados")
     st.dataframe(psd)
