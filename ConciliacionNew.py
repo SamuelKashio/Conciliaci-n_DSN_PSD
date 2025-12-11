@@ -64,41 +64,32 @@ def cargar_excel_bcp(archivo):
     return df_filtrado[['PSP_TIN', 'Monto', 'Fecha', 'Nº operación']], False
 
 
-# NUEVO: lector para EECC BBVA
 @st.cache_data
 def cargar_excel_bbva(archivo):
-    # El BBVA trae cabeceras y texto arriba, saltamos las primeras líneas
     df = pd.read_excel(archivo, skiprows=10)
-
     cols = df.columns
 
-    # Columnas típicas del EECC BBVA
     col_fecha = 'F.Operación' if 'F.Operación' in cols else cols[0]
     col_concepto = 'Concepto' if 'Concepto' in cols else cols[3]
+
     if 'Nº Operación' in cols:
         col_nro_op = 'Nº Operación'
     elif 'N° Operación' in cols:
         col_nro_op = 'N° Operación'
     else:
         col_nro_op = cols[4]
+
     col_importe = 'Importe' if 'Importe' in cols else cols[5]
 
-    # Limpieza básica
     df[col_concepto] = df[col_concepto].astype(str).str.strip()
     df[col_nro_op] = df[col_nro_op].astype(str).str.strip()
 
-    # Monto y fecha
     df['Monto'] = pd.to_numeric(df[col_importe], errors='coerce')
-    # Formato típico: 11-12-2025
     df['Fecha'] = pd.to_datetime(df[col_fecha], format='%d-%m-%Y', errors='coerce')
 
-    # Extraer PSP_TIN desde Concepto (12 dígitos que empiezan con 2)
     df['PSP_TIN'] = df[col_concepto].str.extract(r'(2\d{11})(?!\d)', expand=False)
-
-    # Solo PSP_TIN válidos
     df = df[df['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
 
-    # Extornos en BBVA: misma idea de BCP pero buscando "Extorno" en el concepto
     duplicados = df[df.duplicated(subset=[col_nro_op], keep=False)]
     extornos = duplicados[col_concepto].str.contains('Extorno', case=False, na=False)
     numeros_extorno = duplicados[extornos][col_nro_op].unique()
@@ -135,6 +126,10 @@ hora_corte = None
 es_crep = False
 banco_archivo = None  # 'BCP' o 'BBVA'
 
+
+# --------------------------
+# CARGA ARCHIVO DEL BANCO
+# --------------------------
 if archivo_banco is not None:
     start = time.time()
     try:
@@ -145,7 +140,6 @@ if archivo_banco is not None:
             banco_archivo = "BCP"
             st.info(f"🕐 Hora de corte detectada: {hora_corte}")
         else:
-            # Detectamos si el Excel es BBVA o BCP
             archivo_banco.seek(0)
             preview = pd.read_excel(archivo_banco, nrows=15, header=None)
             archivo_banco.seek(0)
@@ -163,16 +157,25 @@ if archivo_banco is not None:
             f"✅ Archivo del banco cargado con {len(df_banco)} operaciones únicas "
             f"en {round(time.time() - start, 2)} s"
         )
+
+        # 🔎 DEBUG: Mostrar PSP_TIN del EECC
+        st.subheader("📌 PSP_TIN encontrados en el EECC")
+        st.write(f"Total PSP_TIN únicos en EECC: {df_banco['PSP_TIN'].nunique()}")
+        st.dataframe(df_banco)
+
     except Exception as e:
         st.error(f"❌ Error al procesar el archivo del banco: {e}")
         st.stop()
 
+
+# --------------------------
+# CRUCE CON METABASE
+# --------------------------
 if archivo_banco and archivo_metabase:
     start = time.time()
     df_meta = cargar_metabase(archivo_metabase)
     st.caption(f"✅ Metabase cargado en {round(time.time() - start, 2)} segundos")
 
-    # Usamos solo nombres de columnas (nuevo formato)
     columnas = df_meta.columns.str.lower().str.strip()
 
     if 'deuda_psptin' in columnas and 'banco' in columnas and 'moneda' in columnas:
@@ -185,12 +188,12 @@ if archivo_banco and archivo_metabase:
         st.write("Columnas encontradas:", list(df_meta.columns))
         st.stop()
 
-    # Normalizamos Metabase igual que antes
+    # Normalización igual a tu lógica original
     df_meta[col_psptin] = df_meta[col_psptin].astype(str)
     df_meta = df_meta.drop_duplicates(subset=col_psptin)
     df_meta[col_fecha] = pd.to_datetime(df_meta[col_fecha], errors='coerce')
 
-    # Filtro por banco dinámico (BCP o BBVA) y moneda PEN
+    # Filtro dinámico según banco cargado
     if hora_corte:
         df_meta_filtrado = df_meta[
             (df_meta[col_banco].astype(str).str.upper() == banco_archivo) &
@@ -211,8 +214,14 @@ if archivo_banco and archivo_metabase:
             f"({banco_archivo} - PEN)"
         )
 
-    # MISMA LÓGICA ORIGINAL:
-    # DSN = PSP_TIN del banco que NO están en Metabase
+    # 🔎 DEBUG: Mostrar PSP_TIN de Metabase
+    st.subheader("📌 PSP_TIN encontrados en Metabase (filtrado)")
+    st.write(f"Total PSP_TIN únicos en Metabase: {df_meta_filtrado[col_psptin].nunique()}")
+    st.dataframe(df_meta_filtrado[[col_psptin, col_banco, col_moneda, col_fecha]])
+
+    # ----------------------
+    # DSN y PSD (MISMA LÓGICA)
+    # ----------------------
     dsn = df_banco[~df_banco['PSP_TIN'].isin(df_meta_filtrado[col_psptin])]
     st.subheader("🟡 DSN encontrados")
     st.write(f"{len(dsn)} DSN detectados")
@@ -230,7 +239,6 @@ if archivo_banco and archivo_metabase:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    # PSD = PSP_TIN en Metabase que NO están en el banco
     psd = df_meta_filtrado[~df_meta_filtrado[col_psptin].isin(df_banco['PSP_TIN'])]
     st.subheader("🔁 PSD encontrados")
     st.write(f"{len(psd)} PSD detectados")
