@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import io
 import time
 from datetime import datetime
@@ -59,7 +60,7 @@ def cargar_excel_bcp(archivo):
     df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
     df['PSP_TIN'] = df['Descripción operación'].str.extract(r'(2\d{11})(?!\d)', expand=False)
 
-    # Extornos por Nº operación (mismo criterio que ya tenías)
+    # Extornos por Nº operación
     duplicados = df[df.duplicated(subset=['Nº operación'], keep=False)]
     extornos = duplicados['Descripción operación'].str.contains('Extorno', case=False, na=False)
     numeros_extorno = duplicados[extornos]['Nº operación'].unique()
@@ -101,7 +102,6 @@ def cargar_excel_bbva(archivo):
 
     # Monto y fecha
     df['Monto'] = pd.to_numeric(df[col_importe], errors='coerce')
-    # Formato típico: 11-12-2025
     df['Fecha'] = pd.to_datetime(df[col_fecha], format='%d-%m-%Y', errors='coerce')
 
     # Extraer PSP_TIN desde Concepto (12 dígitos empezando en 2)
@@ -110,17 +110,13 @@ def cargar_excel_bbva(archivo):
     # Solo PSP_TIN válidos
     df = df[df['PSP_TIN'].str.match(r'^2\d{11}$', na=False)]
 
-    # --- Manejo de extornos BBVA ---
-    # Buscamos Nº operación repetidos
+    # Extornos BBVA: misma operación con positivo y negativo
     duplicados = df[df.duplicated(subset=[col_nro_op], keep=False)]
-
-    # Operaciones donde hay al menos un monto positivo y uno negativo -> extorno
     ops_extorno = duplicados.groupby(col_nro_op)['Monto'].apply(
         lambda s: s.gt(0).any() and s.lt(0).any()
     )
     numeros_extorno = ops_extorno[ops_extorno].index
 
-    # Eliminamos operaciones que pertenecen a esos extornos
     df_filtrado = df[~df[col_nro_op].isin(numeros_extorno)]
 
     # Eliminamos duplicados por PSP_TIN
@@ -129,7 +125,6 @@ def cargar_excel_bbva(archivo):
     # Normalizamos nombre de la columna de número de operación
     df_filtrado = df_filtrado.rename(columns={col_nro_op: 'Nº operación'})
 
-    # Devolvemos mismo formato que BCP
     return df_filtrado[['PSP_TIN', 'Monto', 'Fecha', 'Nº operación']], False
 
 
@@ -213,49 +208,87 @@ if archivo_banco and archivo_metabase:
     df_meta = cargar_metabase(archivo_metabase)
     st.caption(f"✅ Metabase cargado en {round(time.time() - start, 2)} segundos")
 
-    # --- Detección robusta de columnas en Metabase ---
-    columnas = df_meta.columns.str.lower()
-
-    mapa_columnas = {
-        "psptin": ["deuda_psptin", "psp_tin", "tin", "psptin"],
-        "banco": ["banco", "bank"],
-        "moneda": ["moneda", "currency"],
-        "fecha": ["pc_create_date_gmt_peru", "fecha", "date"]
-    }
-
-    def encontrar_columna(lista_nombres):
-        for name in lista_nombres:
-            if name in columnas:
-                return df_meta.columns[columnas.get_loc(name)]
+    # --- Detección de columnas en Metabase por CONTENIDO ---
+    def detectar_columna_psptin(df):
+        for col in df.columns:
+            serie = df[col].astype(str).str.strip()
+            mask = serie.str.match(r'^2\d{11}$', na=False)
+            if mask.sum() > 0:
+                return col
         return None
 
-    col_psptin = encontrar_columna(mapa_columnas["psptin"])
-    col_banco = encontrar_columna(mapa_columnas["banco"])
-    col_moneda = encontrar_columna(mapa_columnas["moneda"])
-    col_fecha = encontrar_columna(mapa_columnas["fecha"])
+    def detectar_columna_banco(df):
+        bancos_conocidos = {"BCP", "BBVA", "SCOTIABANK", "INTERBANK", "BANBIF"}
+        for col in df.columns:
+            valores = df[col].dropna().astype(str).str.upper().str.strip()
+            if len(valores) == 0:
+                continue
+            unicos = set(valores.unique())
+            if len(unicos & bancos_conocidos) >= 1:
+                return col
+        return None
+
+    def detectar_columna_moneda(df):
+        monedas_conocidas = {"PEN", "S/", "USD", "US$", "EUR"}
+        for col in df.columns:
+            valores = df[col].dropna().astype(str).str.upper().str.strip()
+            if len(valores) == 0:
+                continue
+            unicos = set(valores.unique())
+            if len(unicos & monedas_conocidas) >= 1:
+                return col
+        return None
+
+    def detectar_columna_fecha(df):
+        # Preferimos columnas que ya sean datetime
+        datetime_cols = [col for col in df.columns if np.issubdtype(df[col].dtype, np.datetime64)]
+        if datetime_cols:
+            return datetime_cols[0]
+
+        # Si no hay datetime, probamos a convertir columnas candidatas
+        for col in df.columns:
+            serie = df[col].dropna()
+            if len(serie) == 0:
+                continue
+            muestra = serie.astype(str).head(20)
+            try:
+                convertida = pd.to_datetime(muestra, errors='coerce', dayfirst=True)
+                if convertida.notna().mean() > 0.7:
+                    return col
+            except Exception:
+                continue
+        return None
+
+    col_psptin = detectar_columna_psptin(df_meta)
+    col_banco = detectar_columna_banco(df_meta)
+    col_moneda = detectar_columna_moneda(df_meta)
+    col_fecha = detectar_columna_fecha(df_meta)
 
     if not all([col_psptin, col_banco, col_moneda, col_fecha]):
-        st.error("""
-        ❌ No se encontraron las columnas necesarias en el archivo de Metabase.
+        st.error(f"""
+        ❌ No se pudieron detectar todas las columnas necesarias en el archivo de Metabase.
 
-        Se requieren (con cualquiera de estos nombres):
-        - PSP_TIN: deuda_psptin, psp_tin, tin, psptin
-        - Banco: banco, bank
-        - Moneda: moneda, currency
-        - Fecha: pc_create_date_gmt_peru, fecha, date
+        Columnas detectadas:
+        - PSP_TIN: {col_psptin}
+        - Banco: {col_banco}
+        - Moneda: {col_moneda}
+        - Fecha: {col_fecha}
+
+        Columnas disponibles en el archivo:
+        {list(df_meta.columns)}
         """)
         st.stop()
 
     # Normalizaciones y duplicados
     df_meta[col_psptin] = df_meta[col_psptin].astype(str)
     df_meta = df_meta.drop_duplicates(subset=col_psptin)
-    df_meta[col_fecha] = pd.to_datetime(df_meta[col_fecha], errors='coerce')
+    df_meta[col_fecha] = pd.to_datetime(df_meta[col_fecha], errors='coerce', dayfirst=True)
 
     # Filtrado por banco (BCP/BBVA), PEN y hora de corte si aplica
     if hora_corte:
         df_meta_banco_pen = df_meta[
-            (df_meta[col_banco].astype(str).str.upper() == banco_archivo) &
-            (df_meta[col_moneda].astype(str).str.upper() == "PEN") &
+            (df_meta[col_banco].astype(str).str.upper().str.strip() == banco_archivo) &
+            (df_meta[col_moneda].astype(str).str.upper().str.strip().isin(["PEN", "S/"])) &
             (df_meta[col_fecha] <= hora_corte)
         ]
         st.info(
@@ -264,8 +297,8 @@ if archivo_banco and archivo_metabase:
         )
     else:
         df_meta_banco_pen = df_meta[
-            (df_meta[col_banco].astype(str).str.upper() == banco_archivo) &
-            (df_meta[col_moneda].astype(str).str.upper() == "PEN")
+            (df_meta[col_banco].astype(str).str.upper().str.strip() == banco_archivo) &
+            (df_meta[col_moneda].astype(str).str.upper().str.strip().isin(["PEN", "S/"]))
         ]
         st.info(
             f"🔍 {len(df_meta_banco_pen)} registros filtrados de Metabase "
@@ -277,7 +310,6 @@ if archivo_banco and archivo_metabase:
     st.subheader("🟡 DSN encontrados")
     st.write(f"{len(dsn)} DSN detectados")
     if not es_crep:
-        # Para BCP/BBVA la fecha es datetime
         dsn['Fecha'] = dsn['Fecha'].dt.strftime('%d/%m/%Y')
     st.dataframe(dsn)
 
